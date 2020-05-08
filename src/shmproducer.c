@@ -45,7 +45,7 @@ int main(int argc, const char *argv[])
 {
     int wok, len, i;
 
-    shmmap_ringbuf_t *shmbuf;
+    shmmap_buffer_t *shmbuf;
 
     if (argc != 3) {
         printf("Usage:\n"
@@ -60,11 +60,11 @@ int main(int argc, const char *argv[])
     NUMPAGES = atoi(argv[1]);
     MESSAGES = atoi(argv[2]);
 
-    shmbuf = shmmap_ringbuf_create(SHMMAP_FILENAME_DEFAULT, SHMMAP_FILEMODE_DEFAULT,
+    shmbuf = shmmap_buffer_create(SHMMAP_FILENAME_DEFAULT, SHMMAP_FILEMODE_DEFAULT,
                 SHMMAP_PAGE_SIZE * NUMPAGES);
 
     if (! shmbuf) {
-        printf("shmmap_ringbuf_create failed: %s\n", strerror(errno));
+        printf("shmmap_buffer_create failed: %s\n", strerror(errno));
         exit(1);
     }
 
@@ -74,16 +74,16 @@ int main(int argc, const char *argv[])
         len = snprintf(msg, sizeof(msg), "{%d|%d|%d|%d|%d|%d|%d|%d|%d|%d}\n",
                 rand(), rand(), rand(), rand(), rand(), rand(), rand(), rand(), rand(), rand());
 
-        wok = shmmap_ringbuf_write(shmbuf, (const void *) msg, (size_t) len);
+        wok = shmmap_buffer_write(shmbuf, (const void *) msg, (size_t) len);
 
         if (wok == SHMMAP_WRITE_SUCCESS) {
-            printf("(shmproducer.c:%d) shmmap_ringbuf_write(%d/%d) success: %.*s\n", __LINE__, i, MESSAGES, len, msg);
+            printf("(shmproducer.c:%d) shmmap_buffer_write(%d/%d) success: %.*s\n", __LINE__, i, MESSAGES, len, msg);
         } else if (wok == SHMMAP_WRITE_AGAIN) {
-            printf("(shmproducer.c:%d) shmmap_ringbuf_write(%d/%d) failure: No space left. Please run consumer to read!\n", __LINE__, i, MESSAGES);
+            printf("(shmproducer.c:%d) shmmap_buffer_write(%d/%d) failure: No space left. Please run consumer to read!\n", __LINE__, i, MESSAGES);
             break;
         }
     }
 
-    shmmap_ringbuf_close(shmbuf);
+    shmmap_buffer_close(shmbuf);
     return (0);
 }

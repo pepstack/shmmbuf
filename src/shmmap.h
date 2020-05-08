@@ -30,7 +30,7 @@
  * @author     Liang Zhang <350137278@qq.com>
  * @version    1.0.0
  * @create     2020-05-01 12:46:50
- * @update     2020-05-08 15:10:10
+ * @update     2020-05-08 16:10:10
  */
 #ifndef SHMMAP_H__
 #define SHMMAP_H__
@@ -81,9 +81,9 @@ extern "C"
 /**
  * Default constants only show you the usage for shmmap api.
  *
- * Shared memory file lies in: "/dev/shm/shmmap-ringbuf"
+ * Shared memory file lies in: "/dev/shm/shmmap-buffer"
  */
-#define SHMMAP_FILENAME_DEFAULT        "shmmap-ringbuf"
+#define SHMMAP_FILENAME_DEFAULT        "shmmap-buffer"
 
 #define SHMMAP_FILEMODE_DEFAULT        0666
 
@@ -111,7 +111,7 @@ extern "C"
 
 
 /**
- * Returns of shmmap_ringbuf_write()
+ * Returns of shmmap_buffer_write()
  */
 #define SHMMAP_WRITE_SUCCESS     ((int)(1))
 #define SHMMAP_WRITE_AGAIN       ((int)(0))
@@ -119,7 +119,7 @@ extern "C"
 
 
 /**
- * Returns of shmmap_ringbuf_read_? ()
+ * Returns of shmmap_buffer_read_? ()
  */
 #define SHMMAP_READ_NEXT         ((int)(1))
 #define SHMMAP_READ_AGAIN        ((int)(0))
@@ -372,7 +372,7 @@ void shmmap_semaphore_wait (shmmap_semaphore_t * semap)
 }
 
 
-typedef struct _shmmap_ringbuf_t
+typedef struct _shmmap_buffer_t
 {
     /**
      * https://linux.die.net/man/3/pthread_mutexattr_init
@@ -416,19 +416,19 @@ typedef struct _shmmap_ringbuf_t
 
     /* ring buffer in shared memory with Length */
     char Buffer[0];
-} shmmap_ringbuf_t;
+} shmmap_buffer_t;
 
 
 NOWARNING_UNUSED(static)
-void shmmap_ringbuf_close (shmmap_ringbuf_t *shmbuf)
+void shmmap_buffer_close (shmmap_buffer_t *shmbuf)
 {
     size_t bsize = shmbuf->Length;
-    munmap(shmbuf, sizeof(shmmap_ringbuf_t) + bsize);
+    munmap(shmbuf, sizeof(shmmap_buffer_t) + bsize);
 }
 
 
 NOWARNING_UNUSED(static)
-int shmmap_ringbuf_delete (const char *shmfilename)
+int shmmap_buffer_delete (const char *shmfilename)
 {
     return shm_unlink(shmfilename);
 }
@@ -437,11 +437,11 @@ int shmmap_ringbuf_delete (const char *shmfilename)
 
 
 NOWARNING_UNUSED(static)
-shmmap_ringbuf_t * shmmap_ringbuf_create (const char *shmfilename, mode_t filemode, size_t maxbufsize)
+shmmap_buffer_t * shmmap_buffer_create (const char *shmfilename, mode_t filemode, size_t maxbufsize)
 {
     int err, mfd;
     
-    shmmap_ringbuf_t *shmbuf;
+    shmmap_buffer_t *shmbuf;
 
     /* aligned shared memory bufsize as length */
     size_t rbLength;
@@ -462,7 +462,7 @@ shmmap_ringbuf_t * shmmap_ringbuf_create (const char *shmfilename, mode_t filemo
     }
 
     rbLength = SHMMAP_ALIGN_BSIZE(maxbufsize);
-    mfdSize = sizeof(shmmap_ringbuf_t) + rbLength;
+    mfdSize = sizeof(shmmap_buffer_t) + rbLength;
 
     err = ftruncate(mfd, mfdSize);
     if (err) {
@@ -471,7 +471,7 @@ shmmap_ringbuf_t * shmmap_ringbuf_create (const char *shmfilename, mode_t filemo
         return (NULL);
     }
 
-    shmbuf = (shmmap_ringbuf_t *) mmap(NULL, mfdSize, PROT_READ|PROT_WRITE, MAP_SHARED, mfd, 0);
+    shmbuf = (shmmap_buffer_t *) mmap(NULL, mfdSize, PROT_READ|PROT_WRITE, MAP_SHARED, mfd, 0);
     if (! shmbuf) {
         perror("mmap");
         close(mfd);
@@ -509,15 +509,15 @@ shmmap_ringbuf_t * shmmap_ringbuf_create (const char *shmfilename, mode_t filemo
     /* error */
 error_exit:
 
-    shmmap_ringbuf_close(shmbuf);
-    shmmap_ringbuf_delete(shmfilename);
+    shmmap_buffer_close(shmbuf);
+    shmmap_buffer_delete(shmfilename);
     return NULL;
 }
 
 
 /**
- * shmmap_ringbuf_write()
- *   Write chunk data of entry into shmmap ringbuffer. 
+ * shmmap_buffer_write()
+ *   Write chunk data of entry into shmmap ring buffer. 
  *
  * Returns:
  *   SHMMAP_WRITE_SUCCESS(1) - write success
@@ -525,7 +525,7 @@ error_exit:
  *   SHMMAP_WRITE_FATAL(-1)  - fatal write error
  */
 NOWARNING_UNUSED(static)
-int shmmap_ringbuf_write (shmmap_ringbuf_t *shmbuf, const void *chunk, size_t chunksz)
+int shmmap_buffer_write (shmmap_buffer_t *shmbuf, const void *chunk, size_t chunksz)
 {
     shmmap_entry_t *entry;
     ssize_t W, R, wrap,
@@ -552,10 +552,10 @@ int shmmap_ringbuf_write (shmmap_ringbuf_t *shmbuf, const void *chunk, size_t ch
 
     # ifdef SHMMAP_TRACE_PRINT_ON
         if (wrap) {
-            printf("(shmmap.h:%d) shmmap_ringbuf_write(%" PRIu64":%" PRIu64"): W=%" PRId64" R=%" PRId64" L=%" PRId64"\n",
+            printf("(shmmap.h:%d) shmmap_buffer_write(%" PRIu64":%" PRIu64"): W=%" PRId64" R=%" PRId64" L=%" PRId64"\n",
                 __LINE__, chunksz, AENTSZ, W, R, L);
         } else {
-            printf("(shmmap.h:%d) shmmap_ringbuf_write(%" PRIu64":%" PRIu64"): R=%" PRId64" W=%" PRId64" L=%" PRId64"\n",
+            printf("(shmmap.h:%d) shmmap_buffer_write(%" PRIu64":%" PRIu64"): R=%" PRId64" W=%" PRId64" L=%" PRId64"\n",
                 __LINE__, chunksz, AENTSZ, R, W, L);
         }
     # endif
@@ -613,7 +613,7 @@ int shmmap_ringbuf_write (shmmap_ringbuf_t *shmbuf, const void *chunk, size_t ch
 
 
 /**
- * shmmap_ringbuf_read_copy()
+ * shmmap_buffer_read_copy()
  *   Copy entry from shmmap ringbuffer into rdbuf.
  *
  * returns:
@@ -624,7 +624,7 @@ int shmmap_ringbuf_write (shmmap_ringbuf_t *shmbuf, const void *chunk, size_t ch
  *   ret > rdbufsz              - no read for insufficient buffer
  */
 NOWARNING_UNUSED(static)
-size_t shmmap_ringbuf_read_copy (shmmap_ringbuf_t *shmbuf, char *rdbuf, size_t rdbufsz)
+size_t shmmap_buffer_read_copy (shmmap_buffer_t *shmbuf, char *rdbuf, size_t rdbufsz)
 {
     shmmap_entry_t *entry;
 
@@ -644,9 +644,9 @@ size_t shmmap_ringbuf_read_copy (shmmap_ringbuf_t *shmbuf, char *rdbuf, size_t r
 
     # ifdef SHMMAP_TRACE_PRINT_ON
         if (wrap) {
-            printf("(shmmap.h:%d) shmmap_ringbuf_read_copy(): W=%" PRId64" R=%" PRId64" L=%" PRId64"\n", __LINE__, W, R, L);
+            printf("(shmmap.h:%d) shmmap_buffer_read_copy(): W=%" PRId64" R=%" PRId64" L=%" PRId64"\n", __LINE__, W, R, L);
         } else {
-            printf("(shmmap.h:%d) shmmap_ringbuf_read_copy(): R=%" PRId64" W=%" PRId64" L=%" PRId64"\n", __LINE__, R, W, L);
+            printf("(shmmap.h:%d) shmmap_buffer_read_copy(): R=%" PRId64" W=%" PRId64" L=%" PRId64"\n", __LINE__, R, W, L);
         }
     # endif
 
@@ -688,7 +688,7 @@ size_t shmmap_ringbuf_read_copy (shmmap_ringbuf_t *shmbuf, char *rdbuf, size_t r
                         /* expect to read again */
                         shmmap_state_set(&shmbuf->RLock, 0);
 
-                        return shmmap_ringbuf_read_copy(shmbuf, rdbuf, rdbufsz);
+                        return shmmap_buffer_read_copy(shmbuf, rdbuf, rdbufsz);
                     }
                 } else if (W - 0 > HENTSZ) { 
                     /* reset ROffset to 0 */
@@ -763,8 +763,8 @@ size_t shmmap_ringbuf_read_copy (shmmap_ringbuf_t *shmbuf, char *rdbuf, size_t r
 
 
 /**
- * shmmap_ringbuf_read_nextcb()
- *   Read next entry from shmmap ringbuffer into callback (no copy data).
+ * shmmap_buffer_read_nextcb()
+ *   Read next entry from shmmap ring buffer into callback (no copy data).
  *
  * params:
  *   nextentry_cb() - Callback implemented by caller should ONLY
@@ -776,7 +776,7 @@ size_t shmmap_ringbuf_read_copy (shmmap_ringbuf_t *shmbuf, char *rdbuf, size_t r
  *   SHMMAP_READ_FATAL(-1)  - fatal read error
  */
 NOWARNING_UNUSED(static)
-int shmmap_ringbuf_read_nextcb (shmmap_ringbuf_t *shmbuf, int (*nextentry_cb)(const shmmap_entry_t *entry, void *arg), void *arg)
+int shmmap_buffer_read_nextcb (shmmap_buffer_t *shmbuf, int (*nextentry_cb)(const shmmap_entry_t *entry, void *arg), void *arg)
 {
     shmmap_entry_t *entry;
 
@@ -796,9 +796,9 @@ int shmmap_ringbuf_read_nextcb (shmmap_ringbuf_t *shmbuf, int (*nextentry_cb)(co
 
     # ifdef SHMMAP_TRACE_PRINT_ON
         if (wrap) {
-            printf("(shmmap.h:%d) shmmap_ringbuf_read_copy(): W=%" PRId64" R=%" PRId64" L=%" PRId64"\n", __LINE__, W, R, L);
+            printf("(shmmap.h:%d) shmmap_buffer_read_copy(): W=%" PRId64" R=%" PRId64" L=%" PRId64"\n", __LINE__, W, R, L);
         } else {
-            printf("(shmmap.h:%d) shmmap_ringbuf_read_copy(): R=%" PRId64" W=%" PRId64" L=%" PRId64"\n", __LINE__, R, W, L);
+            printf("(shmmap.h:%d) shmmap_buffer_read_copy(): R=%" PRId64" W=%" PRId64" L=%" PRId64"\n", __LINE__, R, W, L);
         }
     # endif
 
@@ -834,7 +834,7 @@ int shmmap_ringbuf_read_nextcb (shmmap_ringbuf_t *shmbuf, int (*nextentry_cb)(co
                         /* expect to read again */
                         shmmap_state_set(&shmbuf->RLock, 0);
 
-                        return shmmap_ringbuf_read_nextcb(shmbuf, nextentry_cb, arg);
+                        return shmmap_buffer_read_nextcb(shmbuf, nextentry_cb, arg);
                     }
                 } else if (W - 0 > HENTSZ) { 
                     /* reset ROffset to 0 */
