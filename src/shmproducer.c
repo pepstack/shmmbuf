@@ -15,19 +15,15 @@ int main(int argc, const char *argv[])
         exit(1);
     }
 
-    printf("shmproducer start...\n");
-
     srand(time(0));
 
-    len = snprintf(msg, sizeof(msg), "{%d|%d|%d|%d|%d|%d|%d|%d}\n",
-            rand(), rand(), rand(), rand(), rand(), rand(), rand(), rand());
+    len = snprintf(msg, sizeof(msg), "{%d|%d|%d|%d|%d|%d|%d|%d|%d|%d}\n",
+            rand(), rand(), rand(), rand(), rand(), rand(), rand(), rand(), rand(), rand());
 
     ok = shmmap_ringbuf_write(shmbuf, (const void *) msg, (size_t) len);
 
     printf("shmmap_ringbuf_write(%s): %.*s\n", (ok? "success" : "failed"), len, msg);
 
     shmmap_ringbuf_close(shmbuf);
-
-    printf("shmproducer exit ok.\n");
     return (0);
 }

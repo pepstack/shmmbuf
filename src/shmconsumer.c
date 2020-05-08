@@ -1,7 +1,7 @@
 /* shmconsumer.c */
 #include "shmmap.h"
 
-#define SHM_READMSG_NOCOPY
+//#define SHM_READMSG_NOCOPY
 
 int on_shm_readmsg(const shmmap_msg_t *msg, void *arg)
 {
@@ -12,7 +12,7 @@ int on_shm_readmsg(const shmmap_msg_t *msg, void *arg)
 
 int main(int argc, const char *argv[])
 {
-    size_t msgsz;
+    ssize_t msgsz;
 
     char msgbuf[256];
 
@@ -30,13 +30,11 @@ int main(int argc, const char *argv[])
 #else
     // copy to msgbuf
     msgsz = shmmap_ringbuf_read_copy(shmbuf, msgbuf, sizeof(msgbuf));
-    if ((int) msgsz > 0) {
-        printf("shmmap_ringbuf_read(msgsz=%llu): %.*s\n", msgsz, (int)msgsz, msgbuf);
+    if (msgsz > 0 && msgsz < (ssize_t) sizeof(msgbuf)) {
+        printf("shmmap_ringbuf_read(msgsz=%lld): %.*s\n", msgsz, (int)msgsz, msgbuf);
     }
 #endif
 
     shmmap_ringbuf_close(shmbuf);
-
-    printf("shmconsumer ok.\n");
     return (0);
 }

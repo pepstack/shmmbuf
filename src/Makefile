@@ -11,7 +11,7 @@ CFLAGS=-D_GNU_SOURCE -DNDEBUG -O2
 INCDIRS=-I$(PREFIX)
 
 # objects
-OBJS=sem.o shmmap.o
+OBJS=sem.o
 
 # app bins
 BINCREAT=creat
@@ -27,8 +27,6 @@ all: $(BINCREAT) $(BINPOST) $(BINWAIT) $(BINPROD) $(BINCONS)
 sem.o: $(PREFIX)/sem.c
 	$(CC) $(CFLAGS) -c $(PREFIX)/sem.c -o $@
 
-shmmap.o: $(PREFIX)/shmmap.c
-	$(CC) $(CFLAGS) -c $(PREFIX)/shmmap.c -o $@
 
 # creat
 $(BINCREAT): $(OBJS) $(PREFIX)/creat.c
@@ -47,6 +45,7 @@ $(BINWAIT): $(OBJS) $(PREFIX)/wait.c
 	$(CC) $(CFLAGS) $(PREFIX)/wait.c $(INCDIRS) -o $@ \
 	$(OBJS) \
 	-lpthread -lrt -lm
+
 
 # producer
 $(BINPROD): $(OBJS) $(PREFIX)/shmproducer.c
