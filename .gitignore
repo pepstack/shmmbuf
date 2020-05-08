@@ -5,6 +5,11 @@
 
 libclogger.a
 logapp
+creat
+post
+wait
+consumer
+producer
 
 .git/
 

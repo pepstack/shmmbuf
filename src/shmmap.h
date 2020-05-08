@@ -87,7 +87,7 @@ extern "C"
 
 #define SHMMAP_FILEMODE_DEFAULT        0666
 
-#define SHMMAP_FILESIZE_DEFAULT        1024
+#define SHMMAP_PAGE_SIZE               4096
 
 
 /**

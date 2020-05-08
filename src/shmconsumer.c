@@ -30,10 +30,15 @@
  * 2020-05-08
  */
 
-#define SHMMAP_TRACE_PRINT_ON
+#define SHMMAP_TRACE_PRINT_OFF
+
 #include "shmmap.h"
 
+
 char rdbuf[1024];
+
+int NUMPAGES = 8192;
+int MESSAGES = 10000;
 
 
 #define SHM_READMSG_NOCOPY
@@ -41,50 +46,73 @@ char rdbuf[1024];
 
 int next_shmmap_entry (const shmmap_entry_t *entry, void *arg)
 {
-    printf("(shmconsumer.c:%d) shmmap_ringbuf_read_nextcb(%" PRIu64"): %.*s\n",
-        __LINE__, entry->size, (int)entry->size, entry->chunk);
+    int id = ((int) (uintptr_t) (void*) arg);
+
+    printf("(shmconsumer.c:%d) shmmap_ringbuf_read_nextcb(%d) ok: %.*s\n",
+        __LINE__, id, (int)entry->size, entry->chunk);
     return SHMMAP_READ_NEXT;
 }
 
 
 int main(int argc, const char *argv[])
 {
+    int i;
     size_t rdlen;
 
     shmmap_ringbuf_t *shmbuf;
 
-    shmbuf = shmmap_ringbuf_create(SHMMAP_FILENAME_DEFAULT, SHMMAP_FILEMODE_DEFAULT, SHMMAP_FILESIZE_DEFAULT);
+    if (argc != 3) {
+        printf("Usage:\n"
+               "  $ .%s NUMPAGES MESSAGES\n"
+               "Sample:\n"
+               "  $ .%s 8192 10000\n",
+               strrchr(argv[0], '/'),
+               strrchr(argv[0], '/'));
+        exit(0);
+    }
+
+    NUMPAGES = atoi(argv[1]);
+    MESSAGES = atoi(argv[2]);
+
+    shmbuf = shmmap_ringbuf_create(SHMMAP_FILENAME_DEFAULT, SHMMAP_FILEMODE_DEFAULT,
+                SHMMAP_PAGE_SIZE * NUMPAGES);
+
     if (! shmbuf) {
         printf("(shmconsumer.c:%d) shmmap_ringbuf_create failed: %s\n", __LINE__, strerror(errno));
         exit(1);
     }
 
-#ifdef SHM_READMSG_NOCOPY
-    // no copy
-    rdlen = shmmap_ringbuf_read_nextcb(shmbuf, next_shmmap_entry, 0);
-    if (rdlen == SHMMAP_READ_FATAL) {
-        exit(EXIT_FAILURE);
-    }
-    if (rdlen == SHMMAP_READ_AGAIN) {
-        printf("(shmconsumer.c:%d) shmmap_ringbuf_read_nextcb(%" PRIu64"): read no entry.\n", __LINE__, rdlen);
-    }
-#else
-    // copy to rdbuf
-    rdlen = shmmap_ringbuf_read_copy(shmbuf, rdbuf, sizeof(rdbuf));
-    if (rdlen == SHMMAP_READ_FATAL) {
-        exit(EXIT_FAILURE);
-    }
+    for (i = 1; i <= MESSAGES; i++) {
+    #ifdef SHM_READMSG_NOCOPY
+        // no copy
+        rdlen = shmmap_ringbuf_read_nextcb(shmbuf, next_shmmap_entry, ((void*) (uintptr_t) (int) (i)));
+        if (rdlen == SHMMAP_READ_FATAL) {
+            exit(EXIT_FAILURE);
+        }
+        if (rdlen == SHMMAP_READ_AGAIN) {
+            printf("(shmconsumer.c:%d) shmmap_ringbuf_read_nextcb(%d) endup!\n", __LINE__, i);
+            break;
+        }
+    #else
+        // copy to rdbuf
+        rdlen = shmmap_ringbuf_read_copy(shmbuf, rdbuf, sizeof(rdbuf));
+        if (rdlen == SHMMAP_READ_FATAL) {
+            exit(EXIT_FAILURE);
+        }
 
-    if (rdlen <= sizeof(rdbuf)) {
-        printf("(shmconsumer.c:%d) shmmap_ringbuf_read_copy(%" PRIu64"): %.*s\n",
-             __LINE__, rdlen, (int)rdlen, rdbuf);
-    } else if (rdlen > sizeof(rdbuf)) {
-        printf("(shmconsumer.c:%d) shmmap_ringbuf_read_copy(%" PRIu64"): insufficient read buf(%" PRIu64").\n",
-             __LINE__, rdlen, sizeof(rdbuf));
-    } else {
-        printf("(shmconsumer.c:%d) shmmap_ringbuf_read_copy(%" PRIu64"): read no entry.\n", __LINE__, rdlen);
+        if (rdlen <= sizeof(rdbuf)) {
+            printf("(shmconsumer.c:%d) shmmap_ringbuf_read_copy(%d) ok: %.*s\n",
+                 __LINE__, i, (int)rdlen, rdbuf);
+        } else if (rdlen > sizeof(rdbuf)) {
+            printf("(shmconsumer.c:%d) shmmap_ringbuf_read_copy(%d) fail: insufficient rdbuf(%" PRIu64").\n",
+                 __LINE__, i, sizeof(rdbuf));
+            break;
+        } else {
+            printf("(shmconsumer.c:%d) shmmap_ringbuf_read_copy(%d) endup!\n", __LINE__, i);
+            break;
+        }
+    #endif
     }
-#endif
 
     shmmap_ringbuf_close(shmbuf);
     return (0);

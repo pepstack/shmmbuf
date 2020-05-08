@@ -30,19 +30,39 @@
  * 2020-05-08
  */
 
-#define SHMMAP_TRACE_PRINT_ON
+#define SHMMAP_TRACE_PRINT_OFF
+
 #include "shmmap.h"
 
-char msg[1024];
+int NUMPAGES = 8192;
+int MESSAGES = 10000;
 
+
+char msg[1024];
+int cnt = 1;
 
 int main(int argc, const char *argv[])
 {
-    int wok, len;
+    int wok, len, i;
 
     shmmap_ringbuf_t *shmbuf;
 
-    shmbuf = shmmap_ringbuf_create(SHMMAP_FILENAME_DEFAULT, SHMMAP_FILEMODE_DEFAULT, SHMMAP_FILESIZE_DEFAULT);
+    if (argc != 3) {
+        printf("Usage:\n"
+               "  $ .%s NUMPAGES MESSAGES\n"
+               "Sample:\n"
+               "  $ .%s 8192 10000\n",
+               strrchr(argv[0], '/'),
+               strrchr(argv[0], '/'));
+        exit(0);
+    }
+
+    NUMPAGES = atoi(argv[1]);
+    MESSAGES = atoi(argv[2]);
+
+    shmbuf = shmmap_ringbuf_create(SHMMAP_FILENAME_DEFAULT, SHMMAP_FILEMODE_DEFAULT,
+                SHMMAP_PAGE_SIZE * NUMPAGES);
+
     if (! shmbuf) {
         printf("shmmap_ringbuf_create failed: %s\n", strerror(errno));
         exit(1);
@@ -50,15 +70,18 @@ int main(int argc, const char *argv[])
 
     srand(time(0));
 
-    len = snprintf(msg, sizeof(msg), "{%d|%d|%d|%d|%d|%d|%d|%d|%d|%d}\n",
-            rand(), rand(), rand(), rand(), rand(), rand(), rand(), rand(), rand(), rand());
+    for (i = 1; i <= MESSAGES; i++) {
+        len = snprintf(msg, sizeof(msg), "{%d|%d|%d|%d|%d|%d|%d|%d|%d|%d}\n",
+                rand(), rand(), rand(), rand(), rand(), rand(), rand(), rand(), rand(), rand());
 
-    wok = shmmap_ringbuf_write(shmbuf, (const void *) msg, (size_t) len);
+        wok = shmmap_ringbuf_write(shmbuf, (const void *) msg, (size_t) len);
 
-    if (wok == SHMMAP_WRITE_SUCCESS) {
-        printf("(shmproducer.c:%d) shmmap_ringbuf_write(%d): %.*s\n", __LINE__, wok, len, msg);
-    } else if (wok == SHMMAP_WRITE_AGAIN) {
-        printf("(shmproducer.c:%d) shmmap_ringbuf_write(%d): no space to write!\n", __LINE__, wok);
+        if (wok == SHMMAP_WRITE_SUCCESS) {
+            printf("(shmproducer.c:%d) shmmap_ringbuf_write(%d/%d) success: %.*s\n", __LINE__, i, MESSAGES, len, msg);
+        } else if (wok == SHMMAP_WRITE_AGAIN) {
+            printf("(shmproducer.c:%d) shmmap_ringbuf_write(%d/%d) failure: No space left. Please run consumer to read!\n", __LINE__, i, MESSAGES);
+            break;
+        }
     }
 
     shmmap_ringbuf_close(shmbuf);
