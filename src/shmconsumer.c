@@ -48,7 +48,7 @@ int next_shmmap_entry (const shmmap_entry_t *entry, void *arg)
 {
     int id = ((int) (uintptr_t) (void*) arg);
 
-    printf("(shmconsumer.c:%d) shmmap_buffer_read_nextcb(%d) ok: %.*s\n",
+    printf("(shmconsumer.c:%d) shmmap_buffer_read_nextcb(%d) success: %.*s\n",
         __LINE__, id, (int)entry->size, entry->chunk);
     return SHMMAP_READ_NEXT;
 }
@@ -91,7 +91,7 @@ int main(int argc, const char *argv[])
         }
         if (rdlen == SHMMAP_READ_AGAIN) {
             printf("(shmconsumer.c:%d) shmmap_buffer_read_nextcb(%d) endup!\n", __LINE__, i);
-            break;
+            usleep(1000);
         }
     #else
         // copy to rdbuf
@@ -101,15 +101,15 @@ int main(int argc, const char *argv[])
         }
 
         if (rdlen <= sizeof(rdbuf)) {
-            printf("(shmconsumer.c:%d) shmmap_buffer_read_copy(%d) ok: %.*s\n",
+            printf("(shmconsumer.c:%d) shmmap_buffer_read_copy(%d) success: %.*s\n",
                  __LINE__, i, (int)rdlen, rdbuf);
         } else if (rdlen > sizeof(rdbuf)) {
-            printf("(shmconsumer.c:%d) shmmap_buffer_read_copy(%d) fail: insufficient rdbuf(%" PRIu64").\n",
+            printf("(shmconsumer.c:%d) shmmap_buffer_read_copy(%d) failure: insufficient rdbuf(%" PRIu64").\n",
                  __LINE__, i, sizeof(rdbuf));
             break;
         } else {
             printf("(shmconsumer.c:%d) shmmap_buffer_read_copy(%d) endup!\n", __LINE__, i);
-            break;
+            usleep(1000);
         }
     #endif
     }

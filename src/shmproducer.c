@@ -79,8 +79,8 @@ int main(int argc, const char *argv[])
         if (wok == SHMMAP_WRITE_SUCCESS) {
             printf("(shmproducer.c:%d) shmmap_buffer_write(%d/%d) success: %.*s\n", __LINE__, i, MESSAGES, len, msg);
         } else if (wok == SHMMAP_WRITE_AGAIN) {
-            printf("(shmproducer.c:%d) shmmap_buffer_write(%d/%d) failure: No space left. Please run consumer to read!\n", __LINE__, i, MESSAGES);
-            break;
+            printf("(shmproducer.c:%d) shmmap_buffer_write(%d/%d) failure: No space left!\n", __LINE__, i, MESSAGES);
+            usleep(1000);
         }
     }
 
