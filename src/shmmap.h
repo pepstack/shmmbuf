@@ -603,12 +603,16 @@ int shmmap_buffer_create (shmmap_buffer_t **outshmbuf, const char *shmfilename, 
     shmmap_buffer_t *shmbuf;
 
     /* total size in bytes of shmmap file */
-    size_t shmfilesizeb;
+    size_t mapfilesize = 0;
 
     /* aligned shared memory size as Length of ring buffer */
-    size_t bufferLength;
+    size_t bufferLength = 0;
 
     int err, fd, exist = 0;
+
+    if (filesize == SHMMAP_INVALID_STATE) {
+        return SHMMAP_CREATE_ERRSIZE;
+    }
 
     fd = shm_open(shmfilename, O_RDWR|O_CREAT|O_EXCL, filemode);
     if (fd == -1 && errno == EEXIST) {
@@ -620,11 +624,16 @@ int shmmap_buffer_create (shmmap_buffer_t **outshmbuf, const char *shmfilename, 
         return SHMMAP_CREATE_ERROPEN;
     }
 
-    bufferLength = SHMMAP_ALIGN_PAGESIZE(filesize);
+    if (! exist && ! filesize) {
+        /* create a new one shmmap requires filesize */
+        close(fd);
+        return SHMMAP_CREATE_ERRSIZE;
+    }
 
-    shmfilesizeb = SHMMAP_BUFFER_HDRSIZE + bufferLength;
-
-    printf("filesize=%llu, bufferLength=%llu\n", shmfilesizeb, bufferLength);
+    if (filesize) {
+        bufferLength = SHMMAP_ALIGN_PAGESIZE(filesize);
+        mapfilesize = SHMMAP_BUFFER_HDRSIZE + bufferLength;
+    }
 
     if (exist) {
         shmbuf = (shmmap_buffer_t *) mmap(NULL, SHMMAP_BUFFER_HDRSIZE, PROT_READ, MAP_SHARED, fd, 0);
@@ -634,12 +643,17 @@ int shmmap_buffer_create (shmmap_buffer_t **outshmbuf, const char *shmfilename, 
             return SHMMAP_CREATE_ERRMMAP;
         }
 
-        if (shmfilesizeb != shmbuf->shmfilesize || bufferLength != shmbuf->Length) {
+        if (! filesize) {
+            bufferLength = shmbuf->Length;
+            mapfilesize = shmbuf->shmfilesize;
+        }
+
+        if (mapfilesize != shmbuf->shmfilesize || bufferLength != shmbuf->Length) {
             munmap(shmbuf, SHMMAP_BUFFER_HDRSIZE);
             close(fd);
             return SHMMAP_CREATE_ERRSIZE;
         }
-        
+
         if (! shmmap_verify_token(shmbuf, token, decipher_cb)) {
             munmap(shmbuf, SHMMAP_BUFFER_HDRSIZE);
             close(fd);
@@ -649,14 +663,19 @@ int shmmap_buffer_create (shmmap_buffer_t **outshmbuf, const char *shmfilename, 
         munmap(shmbuf, SHMMAP_BUFFER_HDRSIZE);
     }
 
-    err = ftruncate(fd, shmfilesizeb);
+    if (! mapfilesize) {
+        close(fd);
+        return SHMMAP_CREATE_ERRSIZE;
+    }
+
+    err = ftruncate(fd, mapfilesize);
     if (err) {
         perror("ftruncate");
         close(fd);
         return SHMMAP_CREATE_ERRTRUNC;
     }
 
-    shmbuf = (shmmap_buffer_t *) mmap(NULL, shmfilesizeb, PROT_READ|PROT_WRITE, MAP_SHARED, fd, 0);
+    shmbuf = (shmmap_buffer_t *) mmap(NULL, mapfilesize, PROT_READ|PROT_WRITE, MAP_SHARED, fd, 0);
     if (! shmbuf) {
         perror("mmap");
         close(fd);
@@ -666,7 +685,7 @@ int shmmap_buffer_create (shmmap_buffer_t **outshmbuf, const char *shmfilename, 
     if (! exist) {
         randctx64 rctx;
 
-        bzero(shmbuf, shmfilesizeb);
+        bzero(shmbuf, mapfilesize);
         randctx64_init(&rctx, shmmap_getnowtime_us());
         shmbuf->magic = rand64_gen_int(&rctx, 0x0111111111111111, 0x1fffffffffffffff);
 
@@ -687,11 +706,11 @@ int shmmap_buffer_create (shmmap_buffer_t **outshmbuf, const char *shmfilename, 
         shmmap_state_init(&shmbuf->ROffset, 0);
 
         shmbuf->Length = bufferLength;
-        shmbuf->shmfilesize = shmfilesizeb;
+        shmbuf->shmfilesize = mapfilesize;
     }
 
     if (! shmmap_verify_token(shmbuf, token, decipher_cb)) {
-        munmap(shmbuf, shmfilesizeb);
+        munmap(shmbuf, mapfilesize);
         close(fd);
         return SHMMAP_CREATE_ERRTOKEN;
     }

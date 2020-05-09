@@ -70,7 +70,7 @@ int main(int argc, const char *argv[])
     ret = shmmap_buffer_create(&shmbuf,
                 SHMMAP_FILENAME_DEFAULT,
                 SHMMAP_FILEMODE_DEFAULT,
-                SHMMAP_PAGE_SIZE * NUMPAGES,
+                SHMMAP_PAGE_SIZE * NUMPAGES, /* 0: do not care */
                 &token, NULL, NULL);
     if (ret) {
         printf("(shmconsumer.c:%d) shmmap_buffer_create error(%d)\n", __LINE__, ret);
