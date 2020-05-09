@@ -87,19 +87,27 @@ extern "C"
 
 #define SHMMAP_FILEMODE_DEFAULT        0666
 
-#define SHMMAP_PAGE_SIZE               4096
-
 
 /**
  * Below definitions SHOULD NOT be changed!
  */
-#define SHMMAP_INVALID_STATE           ((size_t)(-1))
-#define SHMMAP_SIZEOF_ENTRY            (sizeof(shmmap_entry_t))
+#define SHMMAP_PAGE_SIZE        ((size_t)4096)
 
-#define SHMMAP_ALIGN_BSIZE(bsz)  \
-    ((size_t)((((size_t)(bsz)+SHMMAP_SIZEOF_ENTRY-1)/SHMMAP_SIZEOF_ENTRY)*SHMMAP_SIZEOF_ENTRY))
+#define SHMMAP_INVALID_STATE    ((size_t)(-1))
 
-#define SHMMAP_ALIGN_ENTRYSZ(bsz)      SHMMAP_ALIGN_BSIZE((bsz) + SHMMAP_SIZEOF_ENTRY)
+#define SHMMAP_ENTRY_HDRSIZE    (sizeof(shmmap_entry_t))
+
+#define SHMMAP_ALIGN_BSIZE(bsz, alignsize)  \
+            ((size_t)((((size_t)(bsz)+(alignsize)-1)/(alignsize))*(alignsize)))
+
+#define SHMMAP_ALIGN_PAGESIZE(fsz)    \
+            SHMMAP_ALIGN_BSIZE((fsz), SHMMAP_PAGE_SIZE)
+
+#define SHMMAP_ALIGN_ENTRYSIZE(chunksz)    \
+            SHMMAP_ALIGN_BSIZE((chunksz + SHMMAP_ENTRY_HDRSIZE), SHMMAP_ENTRY_HDRSIZE)
+
+#define SHMMAP_BUFFER_HDRSIZE   \
+            SHMMAP_ALIGN_BSIZE(sizeof(shmmap_buffer_t), SHMMAP_PAGE_SIZE)
 
 #define SHMMAP_ENTRY_CAST(p)           ((shmmap_entry_t *)(p))
 
@@ -111,6 +119,18 @@ extern "C"
 
 
 /**
+ * Returns of shmmap_buffer_create()
+ */
+#define SHMMAP_CREATE_SUCCESS      0
+
+#define SHMMAP_CREATE_ERROPEN    (-1)
+#define SHMMAP_CREATE_ERRMMAP    (-2)
+#define SHMMAP_CREATE_ERRSIZE    (-3)
+#define SHMMAP_CREATE_ERRTRUNC   (-4)
+#define SHMMAP_CREATE_ERRTOKEN   (-5)
+
+
+/**
  * Returns of shmmap_buffer_write()
  */
 #define SHMMAP_WRITE_SUCCESS     ((int)(1))
@@ -119,7 +139,7 @@ extern "C"
 
 
 /**
- * Returns of shmmap_buffer_read_? ()
+ * Returns of shmmap_buffer_read_?()
  */
 #define SHMMAP_READ_NEXT         ((int)(1))
 #define SHMMAP_READ_AGAIN        ((int)(0))
@@ -167,31 +187,35 @@ void shmmap_mutex_consistent (pthread_mutex_t *mutexp)
 
 
 NOWARNING_UNUSED(static)
-int shmmap_state_init (shmmap_state_t *st, size_t state)
+void shmmap_state_init (shmmap_state_t *st, size_t state)
 {
     pthread_mutexattr_t attr;
     int err = pthread_mutexattr_init(&attr);
     if (err) {
-        return err;
+        printf("(shmmap.h:%d) pthread_mutexattr_init error(%d): %s.\n", __LINE__, err, strerror(err));
+        exit(EXIT_FAILURE);
     }
     err = pthread_mutexattr_setpshared(&attr, PTHREAD_PROCESS_SHARED);
     if (err) {
+        printf("(shmmap.h:%d) pthread_mutexattr_setpshared error(%d): %s.\n", __LINE__, err, strerror(err));
         pthread_mutexattr_destroy(&attr);
-        return err;
+        exit(EXIT_FAILURE);
     }
     err = pthread_mutexattr_setrobust(&attr, PTHREAD_MUTEX_ROBUST);
     if (err) {
+        printf("(shmmap.h:%d) pthread_mutexattr_setrobust error(%d): %s.\n", __LINE__, err, strerror(err));
         pthread_mutexattr_destroy(&attr);
-        return err;
+        exit(EXIT_FAILURE);
     }
     err = pthread_mutex_init(&st->mutex, &attr);
     if (err) {
+        printf("(shmmap.h:%d) pthread_mutex_init error(%d): %s.\n", __LINE__, err, strerror(err));
         pthread_mutexattr_destroy(&attr);
-        return err;
+        exit(EXIT_FAILURE);
     }
-    st->state = state;
+
     pthread_mutexattr_destroy(&attr);
-    return 0;
+    st->state = state;
 }
 
 
@@ -279,56 +303,61 @@ typedef struct _shmmap_semaphore_t
 
 
 NOWARNING_UNUSED(static)
-int shmmap_semaphore_init (shmmap_semaphore_t *semap)
+void shmmap_semaphore_init (shmmap_semaphore_t *semap)
 {
     pthread_mutexattr_t mattr;
     pthread_condattr_t cattr;
 
     int err = pthread_mutexattr_init(&mattr);
     if (err) {
-        perror("pthread_mutexattr_init");
-        return err;
+        printf("(shmmap.h:%d) pthread_mutexattr_init error(%d): %s.\n", __LINE__, err, strerror(err));
+        exit(EXIT_FAILURE);
     }
     err = pthread_condattr_init(&cattr);
     if (err) {
-        perror("pthread_condattr_init");
+        printf("(shmmap.h:%d) pthread_condattr_init error(%d): %s.\n", __LINE__, err, strerror(err));
         pthread_mutexattr_destroy(&mattr);
-        return err;
+        exit(EXIT_FAILURE);
     }
     err = pthread_mutexattr_setpshared(&mattr, PTHREAD_PROCESS_SHARED);
     if (err) {
-        perror("pthread_mutexattr_setpshared");
-        goto error_exit;
+        printf("(shmmap.h:%d) pthread_mutexattr_setpshared error(%d): %s.\n", __LINE__, err, strerror(err));
+        pthread_mutexattr_destroy(&mattr);
+        pthread_condattr_destroy(&cattr);
+        exit(EXIT_FAILURE);
     }
     err = pthread_mutexattr_setrobust(&mattr, PTHREAD_MUTEX_ROBUST);
     if (err) {
-        perror("pthread_mutexattr_setrobust");
-        goto error_exit;
+        printf("(shmmap.h:%d) pthread_mutexattr_setrobust error(%d): %s.\n", __LINE__, err, strerror(err));
+        pthread_mutexattr_destroy(&mattr);
+        pthread_condattr_destroy(&cattr);
+        exit(EXIT_FAILURE);
     }
     err = pthread_condattr_setpshared(&cattr, PTHREAD_PROCESS_SHARED);
     if (err) {
-        perror("pthread_condattr_setpshared");
-        goto error_exit;
+        printf("(shmmap.h:%d) pthread_condattr_setpshared error(%d): %s.\n", __LINE__, err, strerror(err));
+        pthread_mutexattr_destroy(&mattr);
+        pthread_condattr_destroy(&cattr);
+        exit(EXIT_FAILURE);
     }
     err = pthread_mutex_init(&semap->lock, &mattr);
     if (err) {
-        perror("pthread_mutex_init");
-        goto error_exit;
+        printf("(shmmap.h:%d) pthread_mutex_init error(%d): %s.\n", __LINE__, err, strerror(err));
+        pthread_mutexattr_destroy(&mattr);
+        pthread_condattr_destroy(&cattr);
+        exit(EXIT_FAILURE);
     }
     err = pthread_cond_init(&semap->nonzero, &cattr);
     if (err) {
-        perror("pthread_cond_init");
+        printf("(shmmap.h:%d) pthread_cond_init error(%d): %s.\n", __LINE__, err, strerror(err));
+        pthread_mutexattr_destroy(&mattr);
+        pthread_condattr_destroy(&cattr);
         pthread_mutex_destroy(&semap->lock);
+        exit(EXIT_FAILURE);
     }
 
     /* success */
     semap->count = 0;
-
-error_exit:
-
-    pthread_mutexattr_destroy(&mattr);
-    pthread_condattr_destroy(&cattr);
-    return err;
 }
 
 
@@ -374,6 +403,21 @@ void shmmap_semaphore_wait (shmmap_semaphore_t * semap)
 
 typedef struct _shmmap_buffer_t
 {
+    /**
+     * total size in bytes for this shmmap file
+     *   struct _shmmap_buffer_t *this;
+     *   shmfilesize = sizeof(*this) + this->Length
+     */
+    size_t shmfilesize;
+
+    /**
+     * access token as a cipher
+     */
+    union {
+        size_t token;
+        char   cipher[sizeof(size_t)];
+    };
+
     /**
      * https://linux.die.net/man/3/pthread_mutexattr_init
      */
@@ -422,8 +466,8 @@ typedef struct _shmmap_buffer_t
 NOWARNING_UNUSED(static)
 void shmmap_buffer_close (shmmap_buffer_t *shmbuf)
 {
-    size_t bsize = shmbuf->Length;
-    munmap(shmbuf, sizeof(shmmap_buffer_t) + bsize);
+    size_t bsize = shmbuf->shmfilesize;
+    munmap(shmbuf, bsize);
 }
 
 
@@ -433,85 +477,118 @@ int shmmap_buffer_delete (const char *shmfilename)
     return shm_unlink(shmfilename);
 }
 
-#define SHMMAP_CHECK_ERR(err)  if (err) goto error_exit
-
 
 NOWARNING_UNUSED(static)
-shmmap_buffer_t * shmmap_buffer_create (const char *shmfilename, mode_t filemode, size_t maxbufsize)
+int shmmap_validate_token (shmmap_buffer_t *shmbuf, void *token)
 {
-    int err, mfd;
-    
+    return 1;
+}
+
+
+/**
+ * shmmap_buffer_create()
+ *   Create if not exists or open an existing shmmap file.
+ *
+ * Returns:
+ *   see Returns of shmmap_buffer_create() in above
+ */
+NOWARNING_UNUSED(static)
+int shmmap_buffer_create (const char *shmfilename, mode_t filemode, size_t filesize, void *token, shmmap_buffer_t **outshmbuf)
+{
     shmmap_buffer_t *shmbuf;
 
-    /* aligned shared memory bufsize as length */
-    size_t rbLength;
+    /* total size in bytes of shmmap file */
+    size_t shmfilesizeb;
 
-    /* total size of shmmap file */
-    size_t mfdSize;
+    /* aligned shared memory size as Length of ring buffer */
+    size_t bufferLength;
 
-    int exist = 0;
+    int err, fd, exist = 0;
 
-    mfd = shm_open(shmfilename, O_RDWR|O_CREAT|O_EXCL, 0666);
-    if (mfd == -1 && errno == EEXIST) {
-        mfd = shm_open(shmfilename, O_RDWR|O_CREAT, filemode);
+    fd = shm_open(shmfilename, O_RDWR|O_CREAT|O_EXCL, filemode);
+    if (fd == -1 && errno == EEXIST) {
+        fd = shm_open(shmfilename, O_RDWR|O_CREAT, filemode);
         exist = 1;
-	}
-    if (mfd == -1) {
+  	}
+    if (fd == -1) {
         perror("shm_open");
-        return (NULL);
+        return SHMMAP_CREATE_ERROPEN;
     }
 
-    rbLength = SHMMAP_ALIGN_BSIZE(maxbufsize);
-    mfdSize = sizeof(shmmap_buffer_t) + rbLength;
+    bufferLength = SHMMAP_ALIGN_PAGESIZE(filesize);
 
-    err = ftruncate(mfd, mfdSize);
+    shmfilesizeb = SHMMAP_BUFFER_HDRSIZE + bufferLength;
+
+    printf("filesize=%llu, bufferLength=%llu\n", shmfilesizeb, bufferLength);
+
+    if (exist) {
+        shmbuf = (shmmap_buffer_t *) mmap(NULL, SHMMAP_BUFFER_HDRSIZE, PROT_READ, MAP_SHARED, fd, 0);
+        if (! shmbuf) {
+            perror("mmap");
+            close(fd);
+            return SHMMAP_CREATE_ERRMMAP;
+        }
+
+        if (shmfilesizeb != shmbuf->shmfilesize || bufferLength != shmbuf->Length) {
+            munmap(shmbuf, SHMMAP_BUFFER_HDRSIZE);
+            close(fd);
+            return SHMMAP_CREATE_ERRSIZE;
+        }
+
+        if (! shmmap_validate_token(shmbuf, token)) {
+            munmap(shmbuf, SHMMAP_BUFFER_HDRSIZE);
+            close(fd);
+            return SHMMAP_CREATE_ERRTOKEN;
+        }
+
+        munmap(shmbuf, SHMMAP_BUFFER_HDRSIZE);
+    }
+
+    err = ftruncate(fd, shmfilesizeb);
     if (err) {
         perror("ftruncate");
-        close(mfd);
-        return (NULL);
+        close(fd);
+        return SHMMAP_CREATE_ERRTRUNC;
     }
 
-    shmbuf = (shmmap_buffer_t *) mmap(NULL, mfdSize, PROT_READ|PROT_WRITE, MAP_SHARED, mfd, 0);
+    shmbuf = (shmmap_buffer_t *) mmap(NULL, shmfilesizeb, PROT_READ|PROT_WRITE, MAP_SHARED, fd, 0);
     if (! shmbuf) {
         perror("mmap");
-        close(mfd);
-        return (NULL);
+        close(fd);
+        return SHMMAP_CREATE_ERRMMAP;
     }
-    close(mfd);
 
     if (! exist) {
-        bzero(shmbuf, mfdSize);
+        bzero(shmbuf, shmfilesizeb);
 
-        err = shmmap_semaphore_init(&shmbuf->semaphore);
-        SHMMAP_CHECK_ERR(err);
+        if (token) {
+            memcpy(shmbuf->cipher, token, sizeof(shmbuf->token));
+        }
 
-        err = shmmap_state_init(&shmbuf->RLock, 0);
-        SHMMAP_CHECK_ERR(err);
+        shmmap_semaphore_init(&shmbuf->semaphore);
 
-        err = shmmap_state_init(&shmbuf->WLock, 0);
-        SHMMAP_CHECK_ERR(err);
+        shmmap_state_init(&shmbuf->RLock, 0);
+        shmmap_state_init(&shmbuf->WLock, 0);
+        shmmap_state_init(&shmbuf->wrapfactor, 0);
+        shmmap_state_init(&shmbuf->WOffset, 0);
+        shmmap_state_init(&shmbuf->ROffset, 0);
 
-        err = shmmap_state_init(&shmbuf->wrapfactor, 0);
-        SHMMAP_CHECK_ERR(err);
-
-        err = shmmap_state_init(&shmbuf->WOffset, 0);
-        SHMMAP_CHECK_ERR(err);
-
-        err = shmmap_state_init(&shmbuf->ROffset, 0);
-        SHMMAP_CHECK_ERR(err);
-
-        shmbuf->Length = rbLength;
+        shmbuf->Length = bufferLength;
+        shmbuf->shmfilesize = shmfilesizeb;
     }
 
-    /* success */
-    return shmbuf;
+    if (! shmmap_validate_token(shmbuf, token)) {
+        munmap(shmbuf, shmfilesizeb);
+        close(fd);
+        return SHMMAP_CREATE_ERRTOKEN;
+    }
 
-    /* error */
-error_exit:
+    /* create or open success */
+    close(fd);
 
-    shmmap_buffer_close(shmbuf);
-    shmmap_buffer_delete(shmfilename);
-    return NULL;
+    *outshmbuf = shmbuf;
+
+    return SHMMAP_CREATE_SUCCESS;
 }
 
 
@@ -530,9 +607,9 @@ int shmmap_buffer_write (shmmap_buffer_t *shmbuf, const void *chunk, size_t chun
     shmmap_entry_t *entry;
     ssize_t W, R, wrap,
             L = (ssize_t)shmbuf->Length,
-            AENTSZ = (ssize_t)SHMMAP_ALIGN_ENTRYSZ(chunksz);
+            AENTSZ = (ssize_t)SHMMAP_ALIGN_ENTRYSIZE(chunksz);
 
-    if (! AENTSZ || AENTSZ == SHMMAP_INVALID_STATE || AENTSZ > (L / SHMMAP_SIZEOF_ENTRY)) {
+    if (! AENTSZ || AENTSZ == SHMMAP_INVALID_STATE || AENTSZ > (L / SHMMAP_ENTRY_HDRSIZE)) {
         /* fatal error should not occurred! */
     # ifdef SHMMAP_TRACE_PRINT_ON
             printf("(shmmap.h:%d) fatal error: invalid chunksz(=%" PRIu64").\n", __LINE__, chunksz);
@@ -630,7 +707,7 @@ size_t shmmap_buffer_read_copy (shmmap_buffer_t *shmbuf, char *rdbuf, size_t rdb
 
     ssize_t R, W, wrap, entsize, AENTSZ, 
             L = (ssize_t)shmbuf->Length,
-            HENTSZ = (ssize_t)SHMMAP_ALIGN_ENTRYSZ(0);
+            HENTSZ = (ssize_t)SHMMAP_ALIGN_ENTRYSIZE(0);
 
     if (! shmmap_state_comp_exch(&shmbuf->RLock, 0, 1)) {
         /* 1st get wrap */
@@ -656,7 +733,7 @@ size_t shmmap_buffer_read_copy (shmmap_buffer_t *shmbuf, char *rdbuf, size_t rdb
                 if (L - R > HENTSZ) {
                     entry = SHMMAP_ENTRY_CAST(&shmbuf->Buffer[R]);
                     if (entry->size) {
-                        AENTSZ = SHMMAP_ALIGN_ENTRYSZ(entry->size);
+                        AENTSZ = SHMMAP_ALIGN_ENTRYSIZE(entry->size);
 
                         if (L - R >= AENTSZ) {
                             entsize = entry->size;
@@ -694,7 +771,7 @@ size_t shmmap_buffer_read_copy (shmmap_buffer_t *shmbuf, char *rdbuf, size_t rdb
                     /* reset ROffset to 0 */
                     entry = SHMMAP_ENTRY_CAST(&shmbuf->Buffer[0]);
                     if (entry->size) {
-                        AENTSZ = SHMMAP_ALIGN_ENTRYSZ(entry->size);
+                        AENTSZ = SHMMAP_ALIGN_ENTRYSIZE(entry->size);
 
                         if (W - 0 >= AENTSZ) {
                             entsize = entry->size;
@@ -724,7 +801,7 @@ size_t shmmap_buffer_read_copy (shmmap_buffer_t *shmbuf, char *rdbuf, size_t rdb
             } else {  /* 0 .. R < W < L */
                 entry = SHMMAP_ENTRY_CAST(&shmbuf->Buffer[R]);
                 if (entry->size) {
-                    AENTSZ = SHMMAP_ALIGN_ENTRYSZ(entry->size);
+                    AENTSZ = SHMMAP_ALIGN_ENTRYSIZE(entry->size);
 
                     if (W - R >= AENTSZ) {
                         entsize = entry->size;
@@ -782,7 +859,7 @@ int shmmap_buffer_read_nextcb (shmmap_buffer_t *shmbuf, int (*nextentry_cb)(cons
 
     ssize_t R, W, wrap, AENTSZ, 
             L = (ssize_t)shmbuf->Length,
-            HENTSZ = (ssize_t)SHMMAP_ALIGN_ENTRYSZ(0);
+            HENTSZ = (ssize_t)SHMMAP_ALIGN_ENTRYSIZE(0);
 
     if (! shmmap_state_comp_exch(&shmbuf->RLock, 0, 1)) {
         /* 1st get wrap */
@@ -808,7 +885,7 @@ int shmmap_buffer_read_nextcb (shmmap_buffer_t *shmbuf, int (*nextentry_cb)(cons
                 if (L - R > HENTSZ) {
                     entry = SHMMAP_ENTRY_CAST(&shmbuf->Buffer[R]);
                     if (entry->size) {
-                        AENTSZ = SHMMAP_ALIGN_ENTRYSZ(entry->size);
+                        AENTSZ = SHMMAP_ALIGN_ENTRYSIZE(entry->size);
 
                         if (L - R >= AENTSZ) {
                             if (nextentry_cb(entry, arg)) {
@@ -840,7 +917,7 @@ int shmmap_buffer_read_nextcb (shmmap_buffer_t *shmbuf, int (*nextentry_cb)(cons
                     /* reset ROffset to 0 */
                     entry = SHMMAP_ENTRY_CAST(&shmbuf->Buffer[0]);
                     if (entry->size) {
-                        AENTSZ = SHMMAP_ALIGN_ENTRYSZ(entry->size);
+                        AENTSZ = SHMMAP_ALIGN_ENTRYSIZE(entry->size);
 
                         if (W - 0 >= AENTSZ) {
                             if (nextentry_cb(entry, arg)) {
@@ -864,7 +941,7 @@ int shmmap_buffer_read_nextcb (shmmap_buffer_t *shmbuf, int (*nextentry_cb)(cons
             } else {  /* 0 .. R < W < L */
                 entry = SHMMAP_ENTRY_CAST(&shmbuf->Buffer[R]);
                 if (entry->size) {
-                    AENTSZ = SHMMAP_ALIGN_ENTRYSZ(entry->size);
+                    AENTSZ = SHMMAP_ALIGN_ENTRYSIZE(entry->size);
 
                     if (W - R >= AENTSZ) {
                         if (nextentry_cb(entry, arg)) {
@@ -893,6 +970,32 @@ int shmmap_buffer_read_nextcb (shmmap_buffer_t *shmbuf, int (*nextentry_cb)(cons
 
     /* read locked fail, retry again */
     return SHMMAP_READ_AGAIN;
+}
+
+
+/**
+ * shmmap_buffer_force_unlock()
+ *   Force unlock state lock. statelock can be one or combination of below:
+ *
+ *     SHMMAP_READSTATE_LOCK
+ *     SHMMAP_WRITESTATE_LOCK
+ * NOTES:
+ *   Make sure prior to force unlocking statelock, all the applications using
+ *    the same shmmap file should be paused!
+ */
+#define SHMMAP_READSTATE_LOCK    1
+#define SHMMAP_WRITESTATE_LOCK   2
+
+NOWARNING_UNUSED(static)
+void shmmap_buffer_force_unlock (shmmap_buffer_t *shmbuf, int statelock)
+{
+    if (SHMMAP_READSTATE_LOCK & statelock) {
+        shmmap_state_comp_exch(&shmbuf->RLock, 1, 0);
+    }
+
+    if (SHMMAP_WRITESTATE_LOCK & statelock) {
+        shmmap_state_comp_exch(&shmbuf->WLock, 1, 0);
+    }
 }
 
 #ifdef __cplusplus

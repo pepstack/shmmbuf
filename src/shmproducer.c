@@ -43,7 +43,7 @@ int cnt = 1;
 
 int main(int argc, const char *argv[])
 {
-    int wok, len, i;
+    int wok, len, ret, i;
 
     shmmap_buffer_t *shmbuf;
 
@@ -60,12 +60,14 @@ int main(int argc, const char *argv[])
     NUMPAGES = atoi(argv[1]);
     MESSAGES = atoi(argv[2]);
 
-    shmbuf = shmmap_buffer_create(SHMMAP_FILENAME_DEFAULT, SHMMAP_FILEMODE_DEFAULT,
-                SHMMAP_PAGE_SIZE * NUMPAGES);
-
-    if (! shmbuf) {
-        printf("shmmap_buffer_create failed: %s\n", strerror(errno));
-        exit(1);
+    ret = shmmap_buffer_create(SHMMAP_FILENAME_DEFAULT,
+                SHMMAP_FILEMODE_DEFAULT,
+                SHMMAP_PAGE_SIZE * NUMPAGES,
+                0,
+                &shmbuf);
+    if (ret) {
+        printf("(shmproducer.c:%d) shmmap_buffer_create error(%d)\n", __LINE__, ret);
+        exit(EXIT_FAILURE);
     }
 
     srand(time(0));

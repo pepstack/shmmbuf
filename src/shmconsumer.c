@@ -56,7 +56,7 @@ int next_shmmap_entry (const shmmap_entry_t *entry, void *arg)
 
 int main(int argc, const char *argv[])
 {
-    int i;
+    int ret, i;
     size_t rdlen;
 
     shmmap_buffer_t *shmbuf;
@@ -74,13 +74,17 @@ int main(int argc, const char *argv[])
     NUMPAGES = atoi(argv[1]);
     MESSAGES = atoi(argv[2]);
 
-    shmbuf = shmmap_buffer_create(SHMMAP_FILENAME_DEFAULT, SHMMAP_FILEMODE_DEFAULT,
-                SHMMAP_PAGE_SIZE * NUMPAGES);
-
-    if (! shmbuf) {
-        printf("(shmconsumer.c:%d) shmmap_buffer_create failed: %s\n", __LINE__, strerror(errno));
-        exit(1);
+    ret = shmmap_buffer_create(SHMMAP_FILENAME_DEFAULT,
+                SHMMAP_FILEMODE_DEFAULT,
+                SHMMAP_PAGE_SIZE * NUMPAGES,
+                0,
+                &shmbuf);
+    if (ret) {
+        printf("(shmconsumer.c:%d) shmmap_buffer_create error(%d)\n", __LINE__, ret);
+        exit(EXIT_FAILURE);
     }
+
+    // shmmap_buffer_force_unlock(shmbuf, SHMMAP_READSTATE_LOCK);
 
     for (i = 1; i <= MESSAGES; i++) {
     #ifdef SHM_READMSG_NOCOPY
