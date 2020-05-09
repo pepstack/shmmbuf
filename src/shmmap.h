@@ -578,17 +578,35 @@ int shmmap_verify_token (shmmap_buffer_t *shmbuf, ub8token_t *token, ub8token_t 
  *   cipher_cb - A cryptography callback provided by caller to generate an
  *                encrypted cipher with 8 bytes-length from given token.
  *
- *    Below sample creates a 4 MB encrypted shmmap buffer with token number
- *     is 12345678.
+ *    Below sample creates a 4 MB encrypted shmmap buffer using token number:
  *
- *       void foo ()
- *       {
+ *       const char  shmname[] = "shmmap-sample";
+ *       char        msgbuf[4096];
+ *       ub8token_t  token = 12345678;
+ *       size_t      bsize = 4*1024*1024;
+ *
+ *       // producer application
+ *       void produce (void) {
+ *           int wok;
  *           shmmap_buffer_t *shmb;
  *
- *           ub8token_t token = 12345678;
+ *           if (shmmap_buffer_create(&shmb, shmname, 0666, bsize, &token, 0, 0) == SHMMAP_CREATE_SUCCESS) {
+ *               wok = shmmap_buffer_write(shmb, "Hello Shmmap Sample", strlen("Hello Shmmap Sample"));
+ *               // ...
+ *               shmmap_buffer_close(shmb);
+ *           }
+ *       }
  *
- *           shmmap_buffer_create(&shmb, "shmmap-test", 0666, 4*1024*1024,
- *              &token, NULL, NULL);
+ *       // consumer application
+ *       void consume (void) {
+ *           size_t rdlen;
+ *           shmmap_buffer_t *shmb;
+ *
+ *           if (shmmap_buffer_create(&shmb, shmname, 0666, 0, &token, 0, 0) == SHMMAP_CREATE_SUCCESS) {
+ *               rdlen = shmmap_buffer_read_copy(shmb, msgbuf, sizeof(msgbuf));
+ *               // ...
+ *               shmmap_buffer_close(shmb);
+ *           }
  *       }
  *
  * Returns:
