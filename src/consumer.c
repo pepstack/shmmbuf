@@ -24,10 +24,10 @@
  **********************************************************************/
 
 /**
- * shmproducer.c
- *   A sample app to produce data into shared memory.
+ * consumer.c
+ *   A sample app to comsume data from shared memory.
  *
- * 2020-05-09
+ * 2020-05-10
  */
 
 #define SHMMAP_TRACE_PRINT_OFF
@@ -36,15 +36,29 @@
 
 ub8token_t token = 12345678;
 
+char rdbuf[1024];
+
 int NUMPAGES = 8192;
 int MESSAGES = 100;
 
-char msg[1024];
+
+#define SHM_READMSG_NOCOPY
+
+
+int next_shmmap_entry (const shmmap_entry_t *entry, void *arg)
+{
+    int id = ((int) (uintptr_t) (void*) arg);
+
+    printf("(shmconsumer.c:%d) shmmap_buffer_read_next(%d) success: %.*s\n",
+        __LINE__, id, (int)entry->size, entry->chunk);
+    return SHMMAP_READ_NEXT;
+}
 
 
 int main(int argc, const char *argv[])
 {
-    int wok, len, ret, i;
+    int ret, i, num;
+    size_t rdlen;
 
     shmmap_buffer_t *shmbuf;
 
@@ -56,27 +70,46 @@ int main(int argc, const char *argv[])
     ret = shmmap_buffer_create(&shmbuf,
                 SHMMAP_FILENAME_DEFAULT,
                 SHMMAP_FILEMODE_DEFAULT,
-                SHMMAP_PAGE_SIZE * NUMPAGES,
+                SHMMAP_PAGE_SIZE * NUMPAGES, /* 0: do not care */
                 &token, NULL, NULL);
+
     if (ret) {
-        printf("(shmproducer.c:%d) shmmap_buffer_create error(%d)\n", __LINE__, ret);
+        printf("(shmconsumer.c:%d) shmmap_buffer_create error(%d)\n", __LINE__, ret);
         exit(EXIT_FAILURE);
     }
 
-    srand(time(0));
+    // shmmap_buffer_force_unlock(shmbuf, SHMMAP_READSTATE_LOCK);
+    i = 0;
+    while (1) {
+        i++;
 
-    for (i = 1; i <= MESSAGES; i++) {
-        len = snprintf(msg, sizeof(msg), "{%d|%d|%d|%d|%d|%d|%d|%d|%d|%d}\n",
-                rand(), rand(), rand(), rand(), rand(), rand(), rand(), rand(), rand(), rand());
+        /* max wait = 3000 ms */
+        shmmap_buffer_wait(shmbuf, 3000*1000);
 
-        wok = shmmap_buffer_write(shmbuf, (const void *) msg, (size_t) len);
-
-        if (wok == SHMMAP_WRITE_SUCCESS) {
-            printf("(shmproducer.c:%d) shmmap_buffer_write(%d/%d) success: %.*s\n", __LINE__, i, MESSAGES, len, msg);
-        } else if (wok == SHMMAP_WRITE_AGAIN) {
-            printf("(shmproducer.c:%d) shmmap_buffer_write(%d/%d) failure: No space left!\n", __LINE__, i, MESSAGES);
-            usleep(1000);
+    #ifdef SHM_READMSG_NOCOPY
+        // batch read without copy
+        num = shmmap_buffer_read_next_batch(shmbuf, next_shmmap_entry, ((void*)(uintptr_t)(int)(i)), 20);
+        if (num == SHMMAP_READ_FATAL) {
+            exit(EXIT_FAILURE);
         }
+    #else
+        // copy to rdbuf
+        rdlen = shmmap_buffer_read_copy(shmbuf, rdbuf, sizeof(rdbuf));
+        if (rdlen == SHMMAP_READ_FATAL) {
+            exit(EXIT_FAILURE);
+        }
+
+        if (rdlen <= sizeof(rdbuf)) {
+            printf("(shmconsumer.c:%d) shmmap_buffer_read_copy(%d) success: %.*s\n",
+                 __LINE__, i, (int)rdlen, rdbuf);
+        } else if (rdlen > sizeof(rdbuf)) {
+            printf("(shmconsumer.c:%d) shmmap_buffer_read_copy(%d) failure: insufficient rdbuf(%" PRIu64").\n",
+                 __LINE__, i, sizeof(rdbuf));
+            break;
+        } else {
+            printf("(shmconsumer.c:%d) shmmap_buffer_read_copy(%d) endup!\n", __LINE__, i);
+        }
+    #endif
     }
 
     shmmap_buffer_close(shmbuf);

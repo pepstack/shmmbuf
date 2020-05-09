@@ -30,7 +30,7 @@
  * @author     Liang Zhang <350137278@qq.com>
  * @version    1.0.0
  * @create     2020-05-01 12:46:50
- * @update     2020-05-08 16:10:10
+ * @update     2020-05-10 01:42:08
  *
  * NOTES:
  *  Prior to include this file, define as following to enable
@@ -97,6 +97,9 @@ extern "C"
 #define SHMMAP_PAGE_SIZE        ((size_t)4096)
 
 #define SHMMAP_INVALID_STATE    ((size_t)(-1))
+
+#define SHMMAP_TIMEOUT_INFINITE ((size_t)(-1))
+#define SHMMAP_TIMEOUT_NOWAIT   (0)
 
 #define SHMMAP_ENTRY_HDRSIZE    (sizeof(shmmap_entry_t))
 
@@ -195,11 +198,8 @@ typedef struct _shmmap_state_t
 
 
 NOWARNING_UNUSED(static)
-ub8token_t shmmap_getnowtime_us (void)
+void shmmap_gettimeofday (struct timespec *now)
 {
-    struct timespec now;
-    ub8token_t usec = 0;
-
 #if defined(__WINDOWS__)
     FILETIME tmfile;
     ULARGE_INTEGER _100nanos;
@@ -211,18 +211,13 @@ ub8token_t shmmap_getnowtime_us (void)
     _100nanos.QuadPart -= 0x19DB1DED53E8000;
 
     /* Convert 100ns units to seconds */
-    now.tv_sec = (time_t)(_100nanos.QuadPart / (10000 * 1000));
+    now->tv_sec = (time_t)(_100nanos.QuadPart / (10000 * 1000));
 
     /* Convert remainder to nanoseconds */
-    now.tv_nsec = (long) ((_100nanos.QuadPart % (10000 * 1000)) * 100);
+    now->tv_nsec = (long) ((_100nanos.QuadPart % (10000 * 1000)) * 100);
 #else
-    clock_gettime(CLOCK_REALTIME, &now);
+    clock_gettime(CLOCK_REALTIME, now);
 #endif
-
-    usec = now.tv_sec;
-    usec *= 1000000;
-    usec += (now.tv_nsec / 1000);
-    return usec;
 }
 
 
@@ -419,42 +414,75 @@ void shmmap_semaphore_init (shmmap_semaphore_t *semap)
 
 
 NOWARNING_UNUSED(static)
-void shmmap_semaphore_post (shmmap_semaphore_t * semap)
+int shmmap_semaphore_lock (shmmap_semaphore_t * semap, size_t timeout_us)
 {
-    int err = pthread_mutex_lock(&semap->lock);
-    if (! err) {
-        if (semap->count == 0) {
-            pthread_cond_signal(&semap->nonzero);
-        }
-        semap->count++;
-        pthread_mutex_unlock(&semap->lock);
-    } else if (err == EOWNERDEAD) {
-        shmmap_mutex_consistent(&semap->lock);
-        shmmap_semaphore_post(semap);
+    if (timeout_us == SHMMAP_TIMEOUT_NOWAIT) {
+        return pthread_mutex_trylock(&semap->lock);
+    } else if (timeout_us == SHMMAP_TIMEOUT_INFINITE) {
+        return pthread_mutex_lock(&semap->lock);
     } else {
-        perror("pthread_mutex_lock");
-        exit(EXIT_FAILURE);
+        struct timespec now, abstime;
+        shmmap_gettimeofday(&now);
+        abstime.tv_sec = now.tv_sec + timeout_us / 1000000UL;
+        abstime.tv_nsec = now.tv_nsec + (timeout_us % 1000000UL) * 1000UL;
+		return pthread_mutex_timedlock(&semap->lock, &abstime);
     }
 }
 
 
 NOWARNING_UNUSED(static)
-void shmmap_semaphore_wait (shmmap_semaphore_t * semap)
+int shmmap_semaphore_post (shmmap_semaphore_t * semap, size_t timeout_us)
 {
-    int err = pthread_mutex_lock(&semap->lock);
+    int err = shmmap_semaphore_lock(semap, timeout_us);
     if (! err) {
-        while (semap->count == 0) {
-            pthread_cond_wait(&semap->nonzero, &semap->lock);
+        if (semap->count == 0) {
+            pthread_cond_signal(&semap->nonzero);
         }
-        semap->count--;
-        pthread_mutex_unlock(&semap->lock);
+        semap->count++;
+
+        return pthread_mutex_unlock(&semap->lock);
     } else if (err == EOWNERDEAD) {
         shmmap_mutex_consistent(&semap->lock);
-        shmmap_semaphore_wait(semap);
-    } else {
+        return shmmap_semaphore_post(semap, timeout_us);
+    } else if (err != EBUSY && err != ETIMEDOUT) {
+        /* SHOULD NEVER RUN TO THIS! */
         perror("pthread_mutex_lock");
-        exit(EXIT_FAILURE);
     }
+    return err;
+}
+
+
+NOWARNING_UNUSED(static)
+int shmmap_semaphore_wait (shmmap_semaphore_t * semap, size_t timeout_us)
+{
+    int err = shmmap_semaphore_lock(semap, timeout_us);
+    if (! err) {
+        while (semap->count == 0) {
+            if (timeout_us == SHMMAP_TIMEOUT_INFINITE) {
+                pthread_cond_wait(&semap->nonzero, &semap->lock);
+                continue;
+            } else {
+                struct timespec now, abstime;
+                shmmap_gettimeofday(&now);
+                abstime.tv_sec = now.tv_sec + timeout_us / 1000000UL;
+                abstime.tv_nsec = now.tv_nsec + (timeout_us % 1000000UL) * 1000UL;
+
+                pthread_cond_timedwait(&semap->nonzero, &semap->lock, &abstime);
+                break;
+            }
+        }
+
+        if (semap->count > 0) {
+            semap->count--;
+        }
+        return pthread_mutex_unlock(&semap->lock);
+    } else if (err == EOWNERDEAD) {
+        shmmap_mutex_consistent(&semap->lock);
+        return shmmap_semaphore_wait(semap, timeout_us);
+    } else if (err != EBUSY && err != ETIMEDOUT) {
+        perror("pthread_mutex_lock");
+    }
+    return err;
 }
 
 
@@ -517,6 +545,10 @@ typedef struct _shmmap_buffer_t
     /* ring buffer in shared memory with Length */
     char Buffer[0];
 } shmmap_buffer_t;
+
+
+NOWARNING_UNUSED(static)
+int __shmmap_buffer_read_internal (shmmap_buffer_t *shmbuf, ssize_t wrap, ssize_t R, ssize_t W, ssize_t L, int (*nextentry_cb)(const shmmap_entry_t *, void *), void *arg);
 
 
 NOWARNING_UNUSED(static)
@@ -701,10 +733,20 @@ int shmmap_buffer_create (shmmap_buffer_t **outshmbuf, const char *shmfilename, 
     }
 
     if (! exist) {
-        randctx64 rctx;
+        randctx64       rctx;
+        struct timespec now;
+        __ub8_t         seedus;
 
         bzero(shmbuf, mapfilesize);
-        randctx64_init(&rctx, shmmap_getnowtime_us());
+
+        shmmap_gettimeofday(&now);
+
+        seedus = now.tv_sec;
+        seedus *= 1000000UL;
+        seedus += (now.tv_nsec / 1000UL);
+    
+        randctx64_init(&rctx, seedus);
+
         shmbuf->magic = rand64_gen_int(&rctx, 0x0111111111111111, 0x1fffffffffffffff);
 
         if (token) {
@@ -990,8 +1032,8 @@ size_t shmmap_buffer_read_copy (shmmap_buffer_t *shmbuf, char *rdbuf, size_t rdb
 
 
 /**
- * shmmap_buffer_read_nextcb()
- *   Read next entry from shmmap ring buffer into callback (no copy data).
+ * shmmap_buffer_read_next()
+ *   Read next one entry from shmmap ring buffer into callback (no copy data).
  *
  * params:
  *   nextentry_cb() - Callback implemented by caller should ONLY
@@ -1003,123 +1045,73 @@ size_t shmmap_buffer_read_copy (shmmap_buffer_t *shmbuf, char *rdbuf, size_t rdb
  *   SHMMAP_READ_FATAL(-1)  - fatal read error
  */
 NOWARNING_UNUSED(static)
-int shmmap_buffer_read_nextcb (shmmap_buffer_t *shmbuf, int (*nextentry_cb)(const shmmap_entry_t *entry, void *arg), void *arg)
+int shmmap_buffer_read_next (shmmap_buffer_t *shmbuf, int (*nextentry_cb)(const shmmap_entry_t *entry, void *arg), void *arg)
 {
-    shmmap_entry_t *entry;
-
-    ssize_t R, W, wrap, AENTSZ, 
-            L = (ssize_t)shmbuf->Length,
-            HENTSZ = (ssize_t)SHMMAP_ALIGN_ENTRYSIZE(0);
+    int ret = SHMMAP_READ_AGAIN;
 
     if (! shmmap_state_comp_exch(&shmbuf->RLock, 0, 1)) {
-        /* 1st get wrap */
-        wrap = shmmap_state_get(&shmbuf->wrapfactor);
+        ssize_t wrap = shmmap_state_get(&shmbuf->wrapfactor); /* 1st get wrap */
+        ssize_t W = shmmap_state_get(&shmbuf->WOffset);    /* 2nd get WOffset */
+        ssize_t R = shmbuf->ROffset.state;   /* 3rd copy ROffset without lock */
 
-        /* 2nd get ROffset */
-        W = shmmap_state_get(&shmbuf->WOffset);
+        ssize_t L = (ssize_t)shmbuf->Length;
 
-        /* 3rd copy WOffset without lock */
-        R = shmbuf->ROffset.state;
+        ret = __shmmap_buffer_read_internal(shmbuf, wrap, R, W, L, nextentry_cb, arg);
 
-    # ifdef SHMMAP_TRACE_PRINT_ON
-        if (wrap) {
-            printf("(shmmap.h:%d) shmmap_buffer_read_copy(): W=%" PRId64" R=%" PRId64" L=%" PRId64"\n", __LINE__, W, R, L);
-        } else {
-            printf("(shmmap.h:%d) shmmap_buffer_read_copy(): R=%" PRId64" W=%" PRId64" L=%" PRId64"\n", __LINE__, R, W, L);
-        }
-    # endif
+        shmmap_state_set(&shmbuf->RLock, 0);
+    }
 
-        /* Sr = f*L + W - R */
-        if (wrap*L + W - R > HENTSZ) {
-            if (wrap) {  /* 0 .. W < R < L */
-                if (L - R > HENTSZ) {
-                    entry = SHMMAP_ENTRY_CAST(&shmbuf->Buffer[R]);
-                    if (entry->size) {
-                        AENTSZ = SHMMAP_ALIGN_ENTRYSIZE(entry->size);
+    return ret;
+}
 
-                        if (L - R >= AENTSZ) {
-                            if (nextentry_cb(entry, arg)) {
-                                /* read success and set ROffset to next entry */
-                                shmmap_state_set(&shmbuf->ROffset, R + AENTSZ);
-                                shmmap_state_set(&shmbuf->RLock, 0);
-                                return SHMMAP_READ_NEXT;
-                            } else {
-                                /* read paused by caller */
-                                shmmap_state_set(&shmbuf->RLock, 0);
-                                return SHMMAP_READ_AGAIN;
-                            }
-                        }
 
-                        printf("(shmmap.h:%d) SHOULD NEVER RUN TO THIS! fatal bug.\n", __LINE__);
-                        shmmap_state_set(&shmbuf->RLock, 0);
-                        return SHMMAP_READ_FATAL;
-                    } else {
-                        /* reset ROffset to 0 (set wrap = 0) */
-                        shmmap_state_set(&shmbuf->ROffset, 0);
-                        shmmap_state_set(&shmbuf->wrapfactor, 0);
 
-                        /* expect to read again */
-                        shmmap_state_set(&shmbuf->RLock, 0);
+/**
+ * shmmap_buffer_read_next_batch()
+ *   Read next batch entries from shmmap ring buffer into callback (no copy data).
+ */
+NOWARNING_UNUSED(static)
+int shmmap_buffer_read_next_batch (shmmap_buffer_t *shmbuf, int (*nextentry_cb)(const shmmap_entry_t *entry, void *arg), void *arg, int batch)
+{
+    int num = 0, ret = SHMMAP_READ_AGAIN;
 
-                        return shmmap_buffer_read_nextcb(shmbuf, nextentry_cb, arg);
-                    }
-                } else if (W - 0 > HENTSZ) { 
-                    /* reset ROffset to 0 */
-                    entry = SHMMAP_ENTRY_CAST(&shmbuf->Buffer[0]);
-                    if (entry->size) {
-                        AENTSZ = SHMMAP_ALIGN_ENTRYSIZE(entry->size);
+    if (! shmmap_state_comp_exch(&shmbuf->RLock, 0, 1)) {
+        ssize_t wrap, W, R,
+                L = (ssize_t)shmbuf->Length;
 
-                        if (W - 0 >= AENTSZ) {
-                            if (nextentry_cb(entry, arg)) {
-                                /* read success and set ROffset to next entry */
-                                shmmap_state_set(&shmbuf->ROffset, AENTSZ);
-                                shmmap_state_set(&shmbuf->wrapfactor, 0);
-                                shmmap_state_set(&shmbuf->RLock, 0);
-                                return SHMMAP_READ_NEXT;
-                            } else {
-                                /* read paused by caller */
-                                shmmap_state_set(&shmbuf->RLock, 0);
-                                return SHMMAP_READ_AGAIN;
-                            }
-                        }
-                    }
-                    
-                    printf("(shmmap.h:%d) SHOULD NEVER RUN TO THIS! fatal bug.\n", __LINE__);
-                    shmmap_state_set(&shmbuf->RLock, 0);
-                    return SHMMAP_READ_FATAL;
-                }
-            } else {  /* 0 .. R < W < L */
-                entry = SHMMAP_ENTRY_CAST(&shmbuf->Buffer[R]);
-                if (entry->size) {
-                    AENTSZ = SHMMAP_ALIGN_ENTRYSIZE(entry->size);
+        while (batch-- > 0) {
+            wrap = shmmap_state_get(&shmbuf->wrapfactor); /* 1st get wrap */
+            W = shmmap_state_get(&shmbuf->WOffset);    /* 2nd get WOffset */
+            R = shmbuf->ROffset.state;   /* 3rd copy ROffset without lock */
 
-                    if (W - R >= AENTSZ) {
-                        if (nextentry_cb(entry, arg)) {
-                            /* read success and set ROffset to next entry */
-                            shmmap_state_set(&shmbuf->ROffset, R + AENTSZ);
-                            shmmap_state_set(&shmbuf->RLock, 0);
-                            return SHMMAP_READ_NEXT;
-                        } else {
-                            /* read paused by caller */
-                            shmmap_state_set(&shmbuf->RLock, 0);
-                            return SHMMAP_READ_AGAIN;
-                        }
-                    }
-                }
-
-                printf("(shmmap.h:%d) SHOULD NEVER RUN TO THIS! fatal bug.\n", __LINE__);
-                shmmap_state_set(&shmbuf->RLock, 0);
-                return SHMMAP_READ_FATAL;
+            ret = __shmmap_buffer_read_internal(shmbuf, wrap, R, W, L, nextentry_cb, arg);
+            if (ret == SHMMAP_READ_NEXT) {
+                num++;
+            }
+            if (ret == SHMMAP_READ_FATAL) {
+                num = (int) SHMMAP_READ_FATAL;
+                break;
             }
         }
 
-        /* no entry to read, retry again */
         shmmap_state_set(&shmbuf->RLock, 0);
-        return SHMMAP_READ_AGAIN;
     }
 
-    /* read locked fail, retry again */
-    return SHMMAP_READ_AGAIN;
+    return num;
+}
+
+
+NOWARNING_UNUSED(static)
+int shmmap_buffer_post (shmmap_buffer_t *shmbuf, size_t timeout_us)
+{
+    return shmmap_semaphore_post(&shmbuf->semaphore, timeout_us);
+}
+
+
+NOWARNING_UNUSED(static)
+int shmmap_buffer_wait (shmmap_buffer_t *shmbuf, size_t timeout_us)
+{
+    return shmmap_semaphore_wait(&shmbuf->semaphore, timeout_us);
 }
 
 
@@ -1146,6 +1138,102 @@ void shmmap_buffer_force_unlock (shmmap_buffer_t *shmbuf, int statelock)
     if (SHMMAP_WRITESTATE_LOCK & statelock) {
         shmmap_state_comp_exch(&shmbuf->WLock, 1, 0);
     }
+}
+
+
+/**
+ * __shmmap_buffer_read_internal()
+ *   Private function. do not call it in your code !!
+ */
+int __shmmap_buffer_read_internal (shmmap_buffer_t *shmbuf, ssize_t wrap, ssize_t R, ssize_t W, ssize_t L, int (*nextentry_cb)(const shmmap_entry_t *, void *), void *arg)
+{
+    shmmap_entry_t *entry;
+
+    ssize_t AENTSZ,
+            HENTSZ = (ssize_t)SHMMAP_ALIGN_ENTRYSIZE(0);
+
+# ifdef SHMMAP_TRACE_PRINT_ON
+    if (wrap) {
+        printf("(shmmap.h:%d) shmmap_buffer_read_next(): W=%" PRId64" R=%" PRId64" L=%" PRId64"\n", __LINE__, W, R, L);
+    } else {
+        printf("(shmmap.h:%d) shmmap_buffer_read_next(): R=%" PRId64" W=%" PRId64" L=%" PRId64"\n", __LINE__, R, W, L);
+    }
+# endif
+
+    /* Sr = f*L + W - R */
+    if (wrap*L + W - R > HENTSZ) {
+        if (wrap) {  /* 0 .. W < R < L */
+            if (L - R > HENTSZ) {
+                entry = SHMMAP_ENTRY_CAST(&shmbuf->Buffer[R]);
+                if (entry->size) {
+                    AENTSZ = SHMMAP_ALIGN_ENTRYSIZE(entry->size);
+
+                    if (L - R >= AENTSZ) {
+                        if (nextentry_cb(entry, arg)) {
+                            /* read success and set ROffset to next entry */
+                            shmmap_state_set(&shmbuf->ROffset, R + AENTSZ);
+                            return SHMMAP_READ_NEXT;
+                        } else {
+                            /* read paused by caller */
+                            return SHMMAP_READ_AGAIN;
+                        }
+                    }
+
+                    printf("(shmmap.h:%d) SHOULD NEVER RUN TO THIS! fatal bug.\n", __LINE__);
+                    return SHMMAP_READ_FATAL;
+                } else {
+                    /* reset ROffset to 0 (set wrap = 0) */
+                    shmmap_state_set(&shmbuf->ROffset, 0);
+                    shmmap_state_set(&shmbuf->wrapfactor, 0);
+
+                    return shmmap_buffer_read_next(shmbuf, nextentry_cb, arg);
+                }
+            } else if (W - 0 > HENTSZ) { 
+                /* reset ROffset to 0 */
+                entry = SHMMAP_ENTRY_CAST(&shmbuf->Buffer[0]);
+                if (entry->size) {
+                    AENTSZ = SHMMAP_ALIGN_ENTRYSIZE(entry->size);
+
+                    if (W - 0 >= AENTSZ) {
+                        if (nextentry_cb(entry, arg)) {
+                            /* read success and set ROffset to next entry */
+                            shmmap_state_set(&shmbuf->ROffset, AENTSZ);
+                            shmmap_state_set(&shmbuf->wrapfactor, 0);
+                            return SHMMAP_READ_NEXT;
+                        } else {
+                            /* read paused by caller */
+                            return SHMMAP_READ_AGAIN;
+                        }
+                    }
+                }
+                
+                printf("(shmmap.h:%d) SHOULD NEVER RUN TO THIS! fatal bug.\n", __LINE__);
+                return SHMMAP_READ_FATAL;
+            }
+        } else {  /* 0 .. R < W < L */
+            entry = SHMMAP_ENTRY_CAST(&shmbuf->Buffer[R]);
+            if (entry->size) {
+                AENTSZ = SHMMAP_ALIGN_ENTRYSIZE(entry->size);
+
+                if (W - R >= AENTSZ) {
+                    if (nextentry_cb(entry, arg)) {
+                        /* read success and set ROffset to next entry */
+                        shmmap_state_set(&shmbuf->ROffset, R + AENTSZ);
+                        return SHMMAP_READ_NEXT;
+                    } else {
+                        /* read paused by caller */
+                        return SHMMAP_READ_AGAIN;
+                    }
+                }
+            }
+
+            printf("(shmmap.h:%d) SHOULD NEVER RUN TO THIS! fatal bug.\n", __LINE__);
+            return SHMMAP_READ_FATAL;
+        }
+    }
+
+    /* no entry to read, retry again */
+    return SHMMAP_READ_AGAIN;
 }
 
 #ifdef __cplusplus

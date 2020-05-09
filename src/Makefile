@@ -1,5 +1,11 @@
-# build create, post, wait
+###########################################################
+# Makefile
+#   build producer and consumer.
 #
+# $ make clean && make
+#
+# A Product of ZhangLiang's
+###########################################################
 
 PREFIX=.
 
@@ -11,58 +17,29 @@ CFLAGS=-D_GNU_SOURCE -DNDEBUG -O2
 INCDIRS=-I$(PREFIX)
 
 # objects
-OBJS=sem.o
+OBJS=
 
 # app bins
-BINCREAT=creat
-BINPOST=post
-BINWAIT=wait
-
 BINPROD=producer
 BINCONS=consumer
 
 
-all: $(BINCREAT) $(BINPOST) $(BINWAIT) $(BINPROD) $(BINCONS)
-
-sem.o: $(PREFIX)/sem.c
-	$(CC) $(CFLAGS) -c $(PREFIX)/sem.c -o $@
-
-
-# creat
-$(BINCREAT): $(OBJS) $(PREFIX)/creat.c
-	$(CC) $(CFLAGS) $(PREFIX)/creat.c $(INCDIRS) -o $@ \
-	$(OBJS) \
-	-lpthread -lrt -lm
-
-# post
-$(BINPOST): $(OBJS) $(PREFIX)/post.c
-	$(CC) $(CFLAGS) $(PREFIX)/post.c $(INCDIRS) -o $@ \
-	$(OBJS) \
-	-lpthread -lrt -lm
-
-# wait
-$(BINWAIT): $(OBJS) $(PREFIX)/wait.c
-	$(CC) $(CFLAGS) $(PREFIX)/wait.c $(INCDIRS) -o $@ \
-	$(OBJS) \
-	-lpthread -lrt -lm
+all: $(BINPROD) $(BINCONS)
 
 
 # producer
-$(BINPROD): $(OBJS) $(PREFIX)/shmproducer.c
-	$(CC) $(CFLAGS) $(PREFIX)/shmproducer.c $(INCDIRS) -o $@ \
+$(BINPROD): $(OBJS) $(PREFIX)/producer.c
+	$(CC) $(CFLAGS) $(PREFIX)/producer.c $(INCDIRS) -o $@ \
 	$(OBJS) \
 	-lpthread -lrt -lm
 
 # consumer
-$(BINCONS): $(OBJS) $(PREFIX)/shmconsumer.c
-	$(CC) $(CFLAGS) $(PREFIX)/shmconsumer.c $(INCDIRS) -o $@ \
+$(BINCONS): $(OBJS) $(PREFIX)/consumer.c
+	$(CC) $(CFLAGS) $(PREFIX)/consumer.c $(INCDIRS) -o $@ \
 	$(OBJS) \
 	-lpthread -lrt -lm
 
 clean:
 	-rm -f $(PREFIX)/*.o
-	-rm -f $(PREFIX)/$(BINCREAT)
-	-rm -f $(PREFIX)/$(BINPOST)
-	-rm -f $(PREFIX)/$(BINWAIT)
 	-rm -f $(PREFIX)/$(BINPROD)
 	-rm -f $(PREFIX)/$(BINCONS)
