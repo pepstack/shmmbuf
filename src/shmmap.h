@@ -31,6 +31,13 @@
  * @version    1.0.0
  * @create     2020-05-01 12:46:50
  * @update     2020-05-08 16:10:10
+ *
+ * NOTES:
+ *  Prior to include this file, define as following to enable
+ *   trace print in spite of speed penalty.
+ *
+ * #define SHMMAP_TRACE_PRINT_ON
+ * #include "shmmap.h"
  */
 #ifndef SHMMAP_H__
 #define SHMMAP_H__
@@ -39,7 +46,6 @@
 extern "C"
 {
 #endif
-
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -61,12 +67,9 @@ extern "C"
 
 
 /**
- * Prior to include this file, define as following to enable
- *  trace print in spite of speed penalty.
- *
- * #define SHMMAP_TRACE_PRINT_ON
- * #include "shmmap.h"
+ * random generator for cryptography
  */
+#include "randctx.h"
 
 
 #ifndef NOWARNING_UNUSED
@@ -123,11 +126,11 @@ extern "C"
  */
 #define SHMMAP_CREATE_SUCCESS      0
 
-#define SHMMAP_CREATE_ERROPEN    (-1)
-#define SHMMAP_CREATE_ERRMMAP    (-2)
-#define SHMMAP_CREATE_ERRSIZE    (-3)
-#define SHMMAP_CREATE_ERRTRUNC   (-4)
-#define SHMMAP_CREATE_ERRTOKEN   (-5)
+#define SHMMAP_CREATE_ERROPEN     (1)
+#define SHMMAP_CREATE_ERRMMAP     (2)
+#define SHMMAP_CREATE_ERRSIZE     (3)
+#define SHMMAP_CREATE_ERRTRUNC    (4)
+#define SHMMAP_CREATE_ERRTOKEN    (5)
 
 
 /**
@@ -144,6 +147,28 @@ extern "C"
 #define SHMMAP_READ_NEXT         ((int)(1))
 #define SHMMAP_READ_AGAIN        ((int)(0))
 #define SHMMAP_READ_FATAL        ((int)(-1))
+
+
+/**
+ * default token cryptographic algorithm
+ */
+typedef __ub8_t ub8token_t;
+
+
+NOWARNING_UNUSED(static)
+ub8token_t shmmap_encipher_token (const ub8token_t magic, ub8token_t *token)
+{
+    ub8token_t cipher = magic ^ (*token);
+    return cipher;
+}
+
+
+NOWARNING_UNUSED(static)
+ub8token_t shmmap_decipher_token (const ub8token_t cipher, ub8token_t *token)
+{
+    ub8token_t magic = cipher ^ (*token);
+    return magic;
+}
 
 
 /**
@@ -167,6 +192,38 @@ typedef struct _shmmap_state_t
     /* process-wide state lock */
     pthread_mutex_t mutex;
 } shmmap_state_t;
+
+
+NOWARNING_UNUSED(static)
+ub8token_t shmmap_getnowtime_us (void)
+{
+    struct timespec now;
+    ub8token_t usec = 0;
+
+#if defined(__WINDOWS__)
+    FILETIME tmfile;
+    ULARGE_INTEGER _100nanos;
+
+    GetSystemTimeAsFileTime(&tmfile);
+
+    _100nanos.LowPart   = tmfile.dwLowDateTime;
+    _100nanos.HighPart  = tmfile.dwHighDateTime; 
+    _100nanos.QuadPart -= 0x19DB1DED53E8000;
+
+    /* Convert 100ns units to seconds */
+    now.tv_sec = (time_t)(_100nanos.QuadPart / (10000 * 1000));
+
+    /* Convert remainder to nanoseconds */
+    now.tv_nsec = (long) ((_100nanos.QuadPart % (10000 * 1000)) * 100);
+#else
+    clock_gettime(CLOCK_REALTIME, &now);
+#endif
+
+    usec = now.tv_sec;
+    usec *= 1000000;
+    usec += (now.tv_nsec / 1000);
+    return usec;
+}
 
 
 /**
@@ -411,12 +468,11 @@ typedef struct _shmmap_buffer_t
     size_t shmfilesize;
 
     /**
-     * access token as a cipher
+     * magic ^ token => cipher
+     * cipher ^ token == magic
      */
-    union {
-        size_t token;
-        char   cipher[sizeof(size_t)];
-    };
+    ub8token_t magic;
+    ub8token_t cipher;
 
     /**
      * https://linux.die.net/man/3/pthread_mutexattr_init
@@ -479,9 +535,34 @@ int shmmap_buffer_delete (const char *shmfilename)
 
 
 NOWARNING_UNUSED(static)
-int shmmap_validate_token (shmmap_buffer_t *shmbuf, void *token)
+int shmmap_verify_token (shmmap_buffer_t *shmbuf, ub8token_t *token, ub8token_t (decipher_cb)(const ub8token_t, ub8token_t *))
 {
-    return 1;
+    ub8token_t magic;
+
+    if (! shmbuf->cipher) {
+        /* true: cipher disabled */
+        return 1;
+    }
+
+    if (! token) {
+        /* true: token not given */
+        return 0;
+    }
+
+    /* cipher and token are all given */
+    if (decipher_cb) {
+        magic = decipher_cb(shmbuf->cipher, token);
+    } else {
+        magic = shmmap_decipher_token(shmbuf->cipher, token);
+    }
+
+    if (! memcmp(&magic, &shmbuf->magic, sizeof(shmbuf->magic))) {
+        /* validate success when: magic == shmbuf->magic */
+        return 1;
+    }
+
+    /* validate failed */
+    return 0;    
 }
 
 
@@ -489,11 +570,35 @@ int shmmap_validate_token (shmmap_buffer_t *shmbuf, void *token)
  * shmmap_buffer_create()
  *   Create if not exists or open an existing shmmap file.
  *
+ * Params:
+ *   token - Point to a buffer with 8 bytes-length taken a plain token text.
+ *           Whether the content in token changes or not will depend on the
+ *            implementation of cipher_cb.
+ *
+ *   cipher_cb - A cryptography callback provided by caller to generate an
+ *                encrypted cipher with 8 bytes-length from given token.
+ *
+ *    Below sample creates a 4 MB encrypted shmmap buffer with token number
+ *     is 12345678.
+ *
+ *       void foo ()
+ *       {
+ *           shmmap_buffer_t *shmb;
+ *
+ *           ub8token_t token = 12345678;
+ *
+ *           shmmap_buffer_create(&shmb, "shmmap-test", 0666, 4*1024*1024,
+ *              &token, NULL, NULL);
+ *       }
+ *
  * Returns:
  *   see Returns of shmmap_buffer_create() in above
  */
 NOWARNING_UNUSED(static)
-int shmmap_buffer_create (const char *shmfilename, mode_t filemode, size_t filesize, void *token, shmmap_buffer_t **outshmbuf)
+int shmmap_buffer_create (shmmap_buffer_t **outshmbuf, const char *shmfilename, mode_t filemode, size_t filesize,
+    ub8token_t *token,
+    ub8token_t (encipher_cb)(const ub8token_t magic, ub8token_t *token),
+    ub8token_t (decipher_cb)(const ub8token_t magic, ub8token_t *token))
 {
     shmmap_buffer_t *shmbuf;
 
@@ -534,8 +639,8 @@ int shmmap_buffer_create (const char *shmfilename, mode_t filemode, size_t files
             close(fd);
             return SHMMAP_CREATE_ERRSIZE;
         }
-
-        if (! shmmap_validate_token(shmbuf, token)) {
+        
+        if (! shmmap_verify_token(shmbuf, token, decipher_cb)) {
             munmap(shmbuf, SHMMAP_BUFFER_HDRSIZE);
             close(fd);
             return SHMMAP_CREATE_ERRTOKEN;
@@ -559,10 +664,18 @@ int shmmap_buffer_create (const char *shmfilename, mode_t filemode, size_t files
     }
 
     if (! exist) {
+        randctx64 rctx;
+
         bzero(shmbuf, shmfilesizeb);
+        randctx64_init(&rctx, shmmap_getnowtime_us());
+        shmbuf->magic = rand64_gen_int(&rctx, 0x0111111111111111, 0x1fffffffffffffff);
 
         if (token) {
-            memcpy(shmbuf->cipher, token, sizeof(shmbuf->token));
+            if (encipher_cb) {
+                shmbuf->cipher = encipher_cb(shmbuf->magic, token);
+            } else {
+                shmbuf->cipher = shmmap_encipher_token(shmbuf->magic, token);
+            }
         }
 
         shmmap_semaphore_init(&shmbuf->semaphore);
@@ -577,7 +690,7 @@ int shmmap_buffer_create (const char *shmfilename, mode_t filemode, size_t files
         shmbuf->shmfilesize = shmfilesizeb;
     }
 
-    if (! shmmap_validate_token(shmbuf, token)) {
+    if (! shmmap_verify_token(shmbuf, token, decipher_cb)) {
         munmap(shmbuf, shmfilesizeb);
         close(fd);
         return SHMMAP_CREATE_ERRTOKEN;

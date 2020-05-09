@@ -25,20 +25,21 @@
 
 /**
  * shmconsumer.c
- *   a sample app to comsume data from shared memory.
+ *   A sample app to comsume data from shared memory.
  *
- * 2020-05-08
+ * 2020-05-09
  */
 
 #define SHMMAP_TRACE_PRINT_OFF
 
 #include "shmmap.h"
 
+ub8token_t token = 12345678;
 
 char rdbuf[1024];
 
 int NUMPAGES = 8192;
-int MESSAGES = 10000;
+int MESSAGES = 100;
 
 
 #define SHM_READMSG_NOCOPY
@@ -61,24 +62,16 @@ int main(int argc, const char *argv[])
 
     shmmap_buffer_t *shmbuf;
 
-    if (argc != 3) {
-        printf("Usage:\n"
-               "  $ .%s NUMPAGES MESSAGES\n"
-               "Sample:\n"
-               "  $ .%s 8192 10000\n",
-               strrchr(argv[0], '/'),
-               strrchr(argv[0], '/'));
-        exit(0);
+    if (argc == 3) {
+        NUMPAGES = atoi(argv[1]);
+        MESSAGES = atoi(argv[2]);
     }
 
-    NUMPAGES = atoi(argv[1]);
-    MESSAGES = atoi(argv[2]);
-
-    ret = shmmap_buffer_create(SHMMAP_FILENAME_DEFAULT,
+    ret = shmmap_buffer_create(&shmbuf,
+                SHMMAP_FILENAME_DEFAULT,
                 SHMMAP_FILEMODE_DEFAULT,
                 SHMMAP_PAGE_SIZE * NUMPAGES,
-                0,
-                &shmbuf);
+                &token, NULL, NULL);
     if (ret) {
         printf("(shmconsumer.c:%d) shmmap_buffer_create error(%d)\n", __LINE__, ret);
         exit(EXIT_FAILURE);
