@@ -647,8 +647,8 @@ int shmmap_verify_token (shmmap_buffer_t *shmbuf, ub8token_t *token, ub8token_t 
 NOWARNING_UNUSED(static)
 int shmmap_buffer_create (shmmap_buffer_t **outshmbuf, const char *shmfilename, mode_t filemode, size_t filesize,
     ub8token_t *token,
-    ub8token_t (encipher_cb)(const ub8token_t magic, ub8token_t *token),
-    ub8token_t (decipher_cb)(const ub8token_t magic, ub8token_t *token))
+    ub8token_t (*encipher_cb)(const ub8token_t magic, ub8token_t *token),
+    ub8token_t (*decipher_cb)(const ub8token_t magic, ub8token_t *token))
 {
     shmmap_buffer_t *shmbuf;
 
