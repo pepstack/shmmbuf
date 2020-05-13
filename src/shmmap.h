@@ -30,7 +30,7 @@
  * @author     Liang Zhang <350137278@qq.com>
  * @version    1.0.0
  * @create     2020-05-01 12:46:50
- * @update     2020-05-10 01:42:08
+ * @update     2020-05-13 07:42:08
  *
  * NOTES:
  *  Prior to include this file, define as following to enable
@@ -86,7 +86,7 @@ extern "C"
  *
  * Shared memory file lies in: "/dev/shm/shmmap-buffer"
  */
-#define SHMMAP_FILENAME_DEFAULT        "shmmap-buffer"
+#define SHMMAP_FILENAME_DEFAULT        "shmmap-buffer-default"
 
 #define SHMMAP_FILEMODE_DEFAULT        0666
 
@@ -425,7 +425,7 @@ int shmmap_semaphore_lock (shmmap_semaphore_t * semap, size_t timeout_us)
         shmmap_gettimeofday(&now);
         abstime.tv_sec = now.tv_sec + timeout_us / 1000000UL;
         abstime.tv_nsec = now.tv_nsec + (timeout_us % 1000000UL) * 1000UL;
-		return pthread_mutex_timedlock(&semap->lock, &abstime);
+        return pthread_mutex_timedlock(&semap->lock, &abstime);
     }
 }
 
@@ -486,6 +486,11 @@ int shmmap_semaphore_wait (shmmap_semaphore_t * semap, size_t timeout_us)
 }
 
 
+/**
+ * shared memory mmap file with a layout of ring buffer.
+ * See also:
+ *   https://github.com/pepstack/clogger/blob/master/src/ringbuf.h
+ */
 typedef struct _shmmap_buffer_t
 {
     /**
@@ -510,12 +515,12 @@ typedef struct _shmmap_buffer_t
     /**
      * RingBuffer
      *
-     * Length(L) = 10, Read(R), Write(W), wrap factor=0,1
+     * Length(L) = 10, Read(R), Write(W), wrap= 0 or 1
      * Space(S)
      *
-     * +           R        W        +                             +
-     * |--+--+--+--+--+--+--+--+--+--|--+--+--+--+--+--+--+--+--+--|--+--+--+--
-     * 0  1  2  3  4  5  6  7  8  9  0  1  2  3  4  5  6  7  8  9  0  1  2  3
+     * +           R        W        +  
+     * |--+--+--+--+--+--+--+--+--+--|--|--
+     * 0  1  2  3  4  5  6  7  8  9  0  1
      *
      *  Sw = L - (fL + W - R), W - R < L
      *  Sr = fL + W - R
@@ -530,13 +535,10 @@ typedef struct _shmmap_buffer_t
     /* Write Lock. 0 - writeable, 1 unwriteable */
     shmmap_state_t WLock;
 
-    /* Wrap Factor: 0 or l */
-    shmmap_state_t wrapfactor;
-
-    /* Write Offset to the Buffer */
+    /* Write Offset to the Buffer start */
     shmmap_state_t WOffset;
 
-    /* Read Offset to the Buffer */
+    /* Read Offset to the Buffer start */
     shmmap_state_t ROffset;
 
     /* Length of ring Buffer: total size in bytes */
@@ -545,6 +547,20 @@ typedef struct _shmmap_buffer_t
     /* ring buffer in shared memory with Length */
     char Buffer[0];
 } shmmap_buffer_t;
+
+
+#define SHMRINGBUF_RESTORE_WRAP(Ro, Wo, L)
+    ((ssize_t)((Ro)/(L) == (Wo)/(L) ? 0 : 1))
+
+
+#define SHMRINGBUF_RESTORE_STATE(Ro, Wo, L)  \
+    ssize_t wrap = SHMRINGBUF_RESTORE_WRAP(Ro, Wo, L); \
+    ssize_t R = (ssize_t)((Ro) % (L)); \
+    ssize_t W = (ssize_t)((Wo) % (L))
+
+
+#define SHMRINGBUF_NORMALIZE_OFFSET(Ao, L)  \
+    ((((Ao)/(L))%2)*L + (Ao)%(L))
 
 
 NOWARNING_UNUSED(static)
@@ -668,7 +684,7 @@ int shmmap_buffer_create (shmmap_buffer_t **outshmbuf, const char *shmfilename, 
     if (fd == -1 && errno == EEXIST) {
         fd = shm_open(shmfilename, O_RDWR|O_CREAT, filemode);
         exist = 1;
-  	}
+    }
     if (fd == -1) {
         perror("shm_open");
         return SHMMAP_CREATE_ERROPEN;
@@ -761,7 +777,6 @@ int shmmap_buffer_create (shmmap_buffer_t **outshmbuf, const char *shmfilename, 
 
         shmmap_state_init(&shmbuf->RLock, 0);
         shmmap_state_init(&shmbuf->WLock, 0);
-        shmmap_state_init(&shmbuf->wrapfactor, 0);
         shmmap_state_init(&shmbuf->WOffset, 0);
         shmmap_state_init(&shmbuf->ROffset, 0);
 
@@ -797,9 +812,9 @@ NOWARNING_UNUSED(static)
 int shmmap_buffer_write (shmmap_buffer_t *shmbuf, const void *chunk, size_t chunksz)
 {
     shmmap_entry_t *entry;
-    ssize_t W, R, wrap,
-            L = (ssize_t)shmbuf->Length,
-            AENTSZ = (ssize_t)SHMMAP_ALIGN_ENTRYSIZE(chunksz);
+    ssize_t Ro, Wo,
+        L = (ssize_t)shmbuf->Length,
+        AENTSZ = (ssize_t)SHMMAP_ALIGN_ENTRYSIZE(chunksz);
 
     if (! AENTSZ || AENTSZ == SHMMAP_INVALID_STATE || AENTSZ > (L / SHMMAP_ENTRY_HDRSIZE)) {
         /* fatal error should not occurred! */
@@ -810,14 +825,11 @@ int shmmap_buffer_write (shmmap_buffer_t *shmbuf, const void *chunk, size_t chun
     }
 
     if (! shmmap_state_comp_exch(&shmbuf->WLock, 0, 1)) {
-        /* 1st get wrap */
-        wrap = shmmap_state_get(&shmbuf->wrapfactor);
+        /* Get original ROffset */
+        Ro = shmmap_state_get(&shmbuf->ROffset);
+        Wo = shmbuf->WOffset.state;
 
-        /* 2nd get ROffset */
-        R = shmmap_state_get(&shmbuf->ROffset);
-
-        /* 3rd copy WOffset without lock */
-        W = shmbuf->WOffset.state;
+        SHMRINGBUF_RESTORE_STATE(Ro, Wo, L);
 
     # ifdef SHMMAP_TRACE_PRINT_ON
         if (wrap) {
@@ -831,21 +843,23 @@ int shmmap_buffer_write (shmmap_buffer_t *shmbuf, const void *chunk, size_t chun
 
         /* Sw = L - (wrap*L + W - R) */
         if (L - (wrap*L + W - R) >= AENTSZ) {
-            if (wrap) { /* 0 .. W < R < L */
+            if (wrap) { /* wrap(1): 0 .. W < R < L */
                 entry = SHMMAP_ENTRY_CAST(&shmbuf->Buffer[W]);
                 entry->size = chunksz;
                 memcpy(entry->chunk, chunk, chunksz);
 
-                /* WOffset = W + AENTSZ */
-                shmmap_state_set(&shmbuf->WOffset, W + AENTSZ);
-            } else { /* 0 .. R < W < L */
+                /* WOffset = Wo + AENTSZ */
+                W = SHMRINGBUF_NORMALIZE_OFFSET(Wo + AENTSZ, L);
+                shmmap_state_set(&shmbuf->WOffset, W);
+            } else {   /* wrap(0): 0 .. R < W < L */
                 if (L - W >= AENTSZ) {
                     entry = SHMMAP_ENTRY_CAST(&shmbuf->Buffer[W]);
                     entry->size = chunksz;
                     memcpy(entry->chunk, chunk, chunksz);
 
-                    /* WOffset = W + AENTSZ */
-                    shmmap_state_set(&shmbuf->WOffset, W + AENTSZ);
+                    /* WOffset = Wo + AENTSZ */
+                    W = SHMRINGBUF_NORMALIZE_OFFSET(Wo + AENTSZ, L);
+                    shmmap_state_set(&shmbuf->WOffset, W);
                 } else if (R - 0 >= AENTSZ) {
                     /* clear W slot before wrap W */
                     bzero(&shmbuf->Buffer[W], L - W); 
@@ -855,11 +869,10 @@ int shmmap_buffer_write (shmmap_buffer_t *shmbuf, const void *chunk, size_t chun
                     entry->size = chunksz;
                     memcpy(entry->chunk, chunk, chunksz);
 
-                    /* WOffset = AENTSZ */
-                    shmmap_state_set(&shmbuf->WOffset, AENTSZ);
+                    /* WOffset = AENTSZ, wrap = 1 */
+                    W = AENTSZ + (1 - (int)(Ro/L))*L;
 
-                    /* set wrap: wrap = 1 */
-                    shmmap_state_set(&shmbuf->wrapfactor, 1);
+                    shmmap_state_set(&shmbuf->WOffset, W);
                 } else {
                     /* no space left to write, expect to call again */
                     shmmap_state_set(&shmbuf->WLock, 0);
@@ -897,19 +910,15 @@ size_t shmmap_buffer_read_copy (shmmap_buffer_t *shmbuf, char *rdbuf, size_t rdb
 {
     shmmap_entry_t *entry;
 
-    ssize_t R, W, wrap, entsize, AENTSZ, 
+    ssize_t Ro, Wo, entsize, AENTSZ, 
             L = (ssize_t)shmbuf->Length,
             HENTSZ = (ssize_t)SHMMAP_ALIGN_ENTRYSIZE(0);
 
     if (! shmmap_state_comp_exch(&shmbuf->RLock, 0, 1)) {
-        /* 1st get wrap */
-        wrap = shmmap_state_get(&shmbuf->wrapfactor);
+        Wo = shmmap_state_get(&shmbuf->WOffset);
+        Ro = shmbuf->ROffset.state;
 
-        /* 2nd get ROffset */
-        W = shmmap_state_get(&shmbuf->WOffset);
-
-        /* 3rd copy WOffset without lock */
-        R = shmbuf->ROffset.state;
+        SHMRINGBUF_RESTORE_STATE(Ro, Wo, L);
 
     # ifdef SHMMAP_TRACE_PRINT_ON
         if (wrap) {
@@ -921,7 +930,7 @@ size_t shmmap_buffer_read_copy (shmmap_buffer_t *shmbuf, char *rdbuf, size_t rdb
 
         /* Sr = f*L + W - R */
         if (wrap*L + W - R > HENTSZ) {
-            if (wrap) {  /* 0 .. W < R < L */
+            if (wrap) {  /* wrap(1): 0 .. W < R < L */
                 if (L - R > HENTSZ) {
                     entry = SHMMAP_ENTRY_CAST(&shmbuf->Buffer[R]);
                     if (entry->size) {
@@ -939,7 +948,8 @@ size_t shmmap_buffer_read_copy (shmmap_buffer_t *shmbuf, char *rdbuf, size_t rdb
                             /* read entry chunk into rdbuf ok */
                             memcpy(rdbuf, entry->chunk, entsize);
 
-                            shmmap_state_set(&shmbuf->ROffset, R + AENTSZ);
+                            R = SHMRINGBUF_NORMALIZE_OFFSET(Ro + AENTSZ, L);
+                            shmmap_state_set(&shmbuf->ROffset, R);
 
                             /* read success if returned entsize <= rdbufsz */
                             shmmap_state_set(&shmbuf->RLock, 0);
@@ -951,12 +961,10 @@ size_t shmmap_buffer_read_copy (shmmap_buffer_t *shmbuf, char *rdbuf, size_t rdb
                         return SHMMAP_READ_FATAL;
                     } else {
                         /* reset ROffset to 0 (set wrap = 0) */
-                        shmmap_state_set(&shmbuf->ROffset, 0);
-                        shmmap_state_set(&shmbuf->wrapfactor, 0);
+                        shmmap_state_set(&shmbuf->ROffset, (Wo/L) * L);
 
                         /* expect to read again */
                         shmmap_state_set(&shmbuf->RLock, 0);
-
                         return shmmap_buffer_read_copy(shmbuf, rdbuf, rdbufsz);
                     }
                 } else if (W - 0 > HENTSZ) { 
@@ -977,8 +985,8 @@ size_t shmmap_buffer_read_copy (shmmap_buffer_t *shmbuf, char *rdbuf, size_t rdb
                             /* read entry chunk into rdbuf ok */
                             memcpy(rdbuf, entry->chunk, entsize);
 
-                            shmmap_state_set(&shmbuf->ROffset, AENTSZ);
-                            shmmap_state_set(&shmbuf->wrapfactor, 0);
+                            /* ROffset = AENTSZ, wrap = 0 */
+                            shmmap_state_set(&shmbuf->ROffset, AENTSZ + (Wo/L)*L);
 
                             /* read success if returned entsize <= rdbufsz */
                             shmmap_state_set(&shmbuf->RLock, 0);
@@ -990,7 +998,7 @@ size_t shmmap_buffer_read_copy (shmmap_buffer_t *shmbuf, char *rdbuf, size_t rdb
                     shmmap_state_set(&shmbuf->RLock, 0);
                     return SHMMAP_READ_FATAL;
                 }
-            } else {  /* 0 .. R < W < L */
+            } else {  /* wrap(0): 0 .. R < W < L */
                 entry = SHMMAP_ENTRY_CAST(&shmbuf->Buffer[R]);
                 if (entry->size) {
                     AENTSZ = SHMMAP_ALIGN_ENTRYSIZE(entry->size);
@@ -999,7 +1007,8 @@ size_t shmmap_buffer_read_copy (shmmap_buffer_t *shmbuf, char *rdbuf, size_t rdb
                         entsize = entry->size;
                         if (entsize > rdbufsz) {
                             /* read buf is insufficient for entry.
-                             * read nothing if returned entsize > rdbufsz */
+                             * read nothing if returned entsize > rdbufsz
+                             */
                             shmmap_state_set(&shmbuf->RLock, 0);
                             return (size_t)entsize;
                         }
@@ -1007,7 +1016,8 @@ size_t shmmap_buffer_read_copy (shmmap_buffer_t *shmbuf, char *rdbuf, size_t rdb
                         /* read entry chunk into rdbuf ok */
                         memcpy(rdbuf, entry->chunk, entsize);
 
-                        shmmap_state_set(&shmbuf->ROffset, R + AENTSZ);
+                        R = SHMRINGBUF_NORMALIZE_OFFSET(Ro + AENTSZ, L);
+                        shmmap_state_set(&shmbuf->ROffset, R);
 
                         /* read success if returned entsize <= rdbufsz */
                         shmmap_state_set(&shmbuf->RLock, 0);
@@ -1050,13 +1060,11 @@ int shmmap_buffer_read_next (shmmap_buffer_t *shmbuf, int (*nextentry_cb)(const 
     int ret = SHMMAP_READ_AGAIN;
 
     if (! shmmap_state_comp_exch(&shmbuf->RLock, 0, 1)) {
-        ssize_t wrap = shmmap_state_get(&shmbuf->wrapfactor); /* 1st get wrap */
-        ssize_t W = shmmap_state_get(&shmbuf->WOffset);    /* 2nd get WOffset */
-        ssize_t R = shmbuf->ROffset.state;   /* 3rd copy ROffset without lock */
+        ssize_t Wo = shmmap_state_get(&shmbuf->WOffset);
+        ssize_t Ro = shmbuf->ROffset.state;
+        ssize_t wrap = SHMRINGBUF_RESTORE_WRAP(Ro, Wo, shmbuf->Length);
 
-        ssize_t L = (ssize_t)shmbuf->Length;
-
-        ret = __shmmap_buffer_read_internal(shmbuf, wrap, R, W, L, nextentry_cb, arg);
+        ret = __shmmap_buffer_read_internal(shmbuf, wrap, Ro, Wo, (ssize_t)shmbuf->Length, nextentry_cb, arg);
 
         shmmap_state_set(&shmbuf->RLock, 0);
     }
@@ -1076,15 +1084,14 @@ int shmmap_buffer_read_next_batch (shmmap_buffer_t *shmbuf, int (*nextentry_cb)(
     int num = 0, ret = SHMMAP_READ_AGAIN;
 
     if (! shmmap_state_comp_exch(&shmbuf->RLock, 0, 1)) {
-        ssize_t wrap, W, R,
-                L = (ssize_t)shmbuf->Length;
+        ssize_t wrap, Wo, Ro;
 
         while (batch-- > 0) {
-            wrap = shmmap_state_get(&shmbuf->wrapfactor); /* 1st get wrap */
-            W = shmmap_state_get(&shmbuf->WOffset);    /* 2nd get WOffset */
-            R = shmbuf->ROffset.state;   /* 3rd copy ROffset without lock */
+            Wo = shmmap_state_get(&shmbuf->WOffset);
+            Ro = shmbuf->ROffset.state;
+            wrap = SHMRINGBUF_RESTORE_WRAP(Ro, Wo, shmbuf->Length);
 
-            ret = __shmmap_buffer_read_internal(shmbuf, wrap, R, W, L, nextentry_cb, arg);
+            ret = __shmmap_buffer_read_internal(shmbuf, wrap, Ro, Wo, (ssize_t)shmbuf->Length, nextentry_cb, arg);
             if (ret == SHMMAP_READ_NEXT) {
                 num++;
             }
@@ -1145,12 +1152,15 @@ void shmmap_buffer_force_unlock (shmmap_buffer_t *shmbuf, int statelock)
  * __shmmap_buffer_read_internal()
  *   Private function. do not call it in your code !!
  */
-int __shmmap_buffer_read_internal (shmmap_buffer_t *shmbuf, ssize_t wrap, ssize_t R, ssize_t W, ssize_t L, int (*nextentry_cb)(const shmmap_entry_t *, void *), void *arg)
+int __shmmap_buffer_read_internal (shmmap_buffer_t *shmbuf, ssize_t wrap, ssize_t Ro, ssize_t Wo, ssize_t L, int (*nextentry_cb)(const shmmap_entry_t *, void *), void *arg)
 {
     shmmap_entry_t *entry;
 
     ssize_t AENTSZ,
             HENTSZ = (ssize_t)SHMMAP_ALIGN_ENTRYSIZE(0);
+
+    ssize_t R = Ro % L;
+    ssize_t W = Wo % L;
 
 # ifdef SHMMAP_TRACE_PRINT_ON
     if (wrap) {
@@ -1162,7 +1172,7 @@ int __shmmap_buffer_read_internal (shmmap_buffer_t *shmbuf, ssize_t wrap, ssize_
 
     /* Sr = f*L + W - R */
     if (wrap*L + W - R > HENTSZ) {
-        if (wrap) {  /* 0 .. W < R < L */
+        if (wrap) {  /* wrap(1): 0 .. W < R < L */
             if (L - R > HENTSZ) {
                 entry = SHMMAP_ENTRY_CAST(&shmbuf->Buffer[R]);
                 if (entry->size) {
@@ -1171,7 +1181,9 @@ int __shmmap_buffer_read_internal (shmmap_buffer_t *shmbuf, ssize_t wrap, ssize_
                     if (L - R >= AENTSZ) {
                         if (nextentry_cb(entry, arg)) {
                             /* read success and set ROffset to next entry */
-                            shmmap_state_set(&shmbuf->ROffset, R + AENTSZ);
+                            R = SHMRINGBUF_NORMALIZE_OFFSET(Ro + AENTSZ, L);
+                            shmmap_state_set(&shmbuf->ROffset, R);
+
                             return SHMMAP_READ_NEXT;
                         } else {
                             /* read paused by caller */
@@ -1183,8 +1195,7 @@ int __shmmap_buffer_read_internal (shmmap_buffer_t *shmbuf, ssize_t wrap, ssize_
                     return SHMMAP_READ_FATAL;
                 } else {
                     /* reset ROffset to 0 (set wrap = 0) */
-                    shmmap_state_set(&shmbuf->ROffset, 0);
-                    shmmap_state_set(&shmbuf->wrapfactor, 0);
+                    shmmap_state_set(&shmbuf->ROffset, (Wo/L) * L);
 
                     return shmmap_buffer_read_next(shmbuf, nextentry_cb, arg);
                 }
@@ -1197,8 +1208,8 @@ int __shmmap_buffer_read_internal (shmmap_buffer_t *shmbuf, ssize_t wrap, ssize_
                     if (W - 0 >= AENTSZ) {
                         if (nextentry_cb(entry, arg)) {
                             /* read success and set ROffset to next entry */
-                            shmmap_state_set(&shmbuf->ROffset, AENTSZ);
-                            shmmap_state_set(&shmbuf->wrapfactor, 0);
+                            shmmap_state_set(&shmbuf->ROffset, AENTSZ + (Wo/L)*L);
+
                             return SHMMAP_READ_NEXT;
                         } else {
                             /* read paused by caller */
@@ -1206,11 +1217,11 @@ int __shmmap_buffer_read_internal (shmmap_buffer_t *shmbuf, ssize_t wrap, ssize_
                         }
                     }
                 }
-                
+
                 printf("(shmmap.h:%d) SHOULD NEVER RUN TO THIS! fatal bug.\n", __LINE__);
                 return SHMMAP_READ_FATAL;
             }
-        } else {  /* 0 .. R < W < L */
+        } else {  /* wrap(0): 0 .. R < W < L */
             entry = SHMMAP_ENTRY_CAST(&shmbuf->Buffer[R]);
             if (entry->size) {
                 AENTSZ = SHMMAP_ALIGN_ENTRYSIZE(entry->size);
@@ -1218,7 +1229,9 @@ int __shmmap_buffer_read_internal (shmmap_buffer_t *shmbuf, ssize_t wrap, ssize_
                 if (W - R >= AENTSZ) {
                     if (nextentry_cb(entry, arg)) {
                         /* read success and set ROffset to next entry */
-                        shmmap_state_set(&shmbuf->ROffset, R + AENTSZ);
+                        R = SHMRINGBUF_NORMALIZE_OFFSET(Ro + AENTSZ, L);
+                        shmmap_state_set(&shmbuf->ROffset, R);
+
                         return SHMMAP_READ_NEXT;
                     } else {
                         /* read paused by caller */
