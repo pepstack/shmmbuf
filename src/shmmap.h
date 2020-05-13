@@ -70,6 +70,7 @@ extern "C"
  * random generator for cryptography
  */
 #include "randctx.h"
+#include "md5sum.h"
 
 
 #ifndef NOWARNING_UNUSED
@@ -549,7 +550,7 @@ typedef struct _shmmap_buffer_t
 } shmmap_buffer_t;
 
 
-#define SHMRINGBUF_RESTORE_WRAP(Ro, Wo, L)
+#define SHMRINGBUF_RESTORE_WRAP(Ro, Wo, L)  \
     ((ssize_t)((Ro)/(L) == (Wo)/(L) ? 0 : 1))
 
 
