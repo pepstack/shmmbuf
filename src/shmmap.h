@@ -445,6 +445,8 @@ int shmmap_semaphore_post (shmmap_semaphore_t * semap, size_t timeout_us)
     } else if (err == EOWNERDEAD) {
         shmmap_mutex_consistent(&semap->lock);
         return shmmap_semaphore_post(semap, timeout_us);
+    } else if (err == EEXIST) {
+        /* DO NOTHING ! */
     } else if (err != EBUSY && err != ETIMEDOUT) {
         /* SHOULD NEVER RUN TO THIS! */
         perror("pthread_mutex_lock");
@@ -480,7 +482,10 @@ int shmmap_semaphore_wait (shmmap_semaphore_t * semap, size_t timeout_us)
     } else if (err == EOWNERDEAD) {
         shmmap_mutex_consistent(&semap->lock);
         return shmmap_semaphore_wait(semap, timeout_us);
+    }  else if (err == EEXIST) {
+        /* DO NOTHING ! */
     } else if (err != EBUSY && err != ETIMEDOUT) {
+        /* can go here */
         perror("pthread_mutex_lock");
     }
     return err;

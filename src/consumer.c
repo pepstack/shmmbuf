@@ -78,7 +78,8 @@ int main(int argc, const char *argv[])
         exit(EXIT_FAILURE);
     }
 
-    // shmmap_buffer_force_unlock(shmbuf, SHMMAP_READSTATE_LOCK);
+    // shmmap_buffer_force_unlock(shmbuf, SHMMAP_READSTATE_LOCK|SHMMAP_WRITESTATE_LOCK);
+
     i = 0;
     while (1) {
         i++;
@@ -87,11 +88,17 @@ int main(int argc, const char *argv[])
         shmmap_buffer_wait(shmbuf, 3000*1000);
 
     #ifdef SHM_READMSG_NOCOPY
+
         // batch read without copy
-        num = shmmap_buffer_read_next_batch(shmbuf, next_shmmap_entry, ((void*)(uintptr_t)(int)(i)), 20);
-        if (num == SHMMAP_READ_FATAL) {
-            exit(EXIT_FAILURE);
+        while ((num = shmmap_buffer_read_next_batch(shmbuf, next_shmmap_entry, ((void*)(uintptr_t)(int)(i)), 20)) > 0) {
+            // read num success
         }
+
+        if (num == SHMMAP_READ_FATAL) {
+            printf("(shmconsumer.c:%d) shmmap_buffer_read_next_batch fatal.\n", __LINE__);
+            break;
+        }
+
     #else
         // copy to rdbuf
         rdlen = shmmap_buffer_read_copy(shmbuf, rdbuf, sizeof(rdbuf));
