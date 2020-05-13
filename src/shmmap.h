@@ -240,7 +240,7 @@ void shmmap_mutex_consistent (pthread_mutex_t *mutexp)
 
 
 NOWARNING_UNUSED(static)
-void shmmap_state_init (shmmap_state_t *st, size_t state)
+void process_shared_mutex_init (pthread_mutex_t *mutexp)
 {
     pthread_mutexattr_t attr;
     int err = pthread_mutexattr_init(&attr);
@@ -260,14 +260,38 @@ void shmmap_state_init (shmmap_state_t *st, size_t state)
         pthread_mutexattr_destroy(&attr);
         exit(EXIT_FAILURE);
     }
-    err = pthread_mutex_init(&st->mutex, &attr);
+    err = pthread_mutex_init(mutexp, &attr);
     if (err) {
         printf("(shmmap.h:%d) pthread_mutex_init error(%d): %s.\n", __LINE__, err, strerror(err));
         pthread_mutexattr_destroy(&attr);
         exit(EXIT_FAILURE);
     }
-
     pthread_mutexattr_destroy(&attr);
+}
+
+
+NOWARNING_UNUSED(static)
+int process_shared_mutex_lock (pthread_mutex_t *mutexp)
+{
+    int err = pthread_mutex_lock(mutexp);
+
+    if (err == EOWNERDEAD) {
+        shmmap_mutex_consistent(mutexp);
+        err = process_shared_mutex_lock(mutexp);
+    }
+
+    return err;
+}
+
+
+#define process_shared_mutex_unlock(mutexp)  \
+    pthread_mutex_unlock(mutexp)
+
+
+NOWARNING_UNUSED(static)
+void shmmap_state_init (shmmap_state_t *st, size_t state)
+{
+    process_shared_mutex_init(&st->mutex);
     st->state = state;
 }
 
@@ -535,11 +559,11 @@ typedef struct _shmmap_buffer_t
      *    Sr > 0: readable
      */
 
-    /* Read Lock. 0 - readable, 1 unreadable */
-    shmmap_state_t RLock;
+    /* Read Lock */
+    pthread_mutex_t RLock;
 
-    /* Write Lock. 0 - writeable, 1 unwriteable */
-    shmmap_state_t WLock;
+    /* Write Lock */
+    pthread_mutex_t WLock;
 
     /* Write Offset to the Buffer start */
     shmmap_state_t WOffset;
@@ -781,8 +805,9 @@ int shmmap_buffer_create (shmmap_buffer_t **outshmbuf, const char *shmfilename, 
 
         shmmap_semaphore_init(&shmbuf->semaphore);
 
-        shmmap_state_init(&shmbuf->RLock, 0);
-        shmmap_state_init(&shmbuf->WLock, 0);
+        process_shared_mutex_init(&shmbuf->RLock);
+        process_shared_mutex_init(&shmbuf->WLock);
+
         shmmap_state_init(&shmbuf->WOffset, 0);
         shmmap_state_init(&shmbuf->ROffset, 0);
 
@@ -830,7 +855,7 @@ int shmmap_buffer_write (shmmap_buffer_t *shmbuf, const void *chunk, size_t chun
         return SHMMAP_WRITE_FATAL;
     }
 
-    if (! shmmap_state_comp_exch(&shmbuf->WLock, 0, 1)) {
+    if (process_shared_mutex_lock(&shmbuf->WLock) == 0) {
         /* Get original ROffset */
         Ro = shmmap_state_get(&shmbuf->ROffset);
         Wo = shmbuf->WOffset.state;
@@ -881,17 +906,17 @@ int shmmap_buffer_write (shmmap_buffer_t *shmbuf, const void *chunk, size_t chun
                     shmmap_state_set(&shmbuf->WOffset, W);
                 } else {
                     /* no space left to write, expect to call again */
-                    shmmap_state_set(&shmbuf->WLock, 0);
+                    process_shared_mutex_unlock(&shmbuf->WLock);
                     return SHMMAP_WRITE_AGAIN;
                 }
             }
 
-            shmmap_state_set(&shmbuf->WLock, 0);
+            process_shared_mutex_unlock(&shmbuf->WLock);
             return SHMMAP_WRITE_SUCCESS;
         }
 
         /* no space left to write */
-        shmmap_state_set(&shmbuf->WLock, 0);
+        process_shared_mutex_unlock(&shmbuf->WLock);
         return SHMMAP_WRITE_AGAIN;
     }
 
@@ -920,7 +945,7 @@ size_t shmmap_buffer_read_copy (shmmap_buffer_t *shmbuf, char *rdbuf, size_t rdb
             L = (ssize_t)shmbuf->Length,
             HENTSZ = (ssize_t)SHMMAP_ALIGN_ENTRYSIZE(0);
 
-    if (! shmmap_state_comp_exch(&shmbuf->RLock, 0, 1)) {
+    if (process_shared_mutex_lock(&shmbuf->RLock) == 0) {
         Wo = shmmap_state_get(&shmbuf->WOffset);
         Ro = shmbuf->ROffset.state;
 
@@ -947,7 +972,7 @@ size_t shmmap_buffer_read_copy (shmmap_buffer_t *shmbuf, char *rdbuf, size_t rdb
                             if (entsize > rdbufsz) {
                                 /* read buf is insufficient for entry.
                                  * read nothing if returned entsize > rdbufsz */
-                                shmmap_state_set(&shmbuf->RLock, 0);
+                                process_shared_mutex_unlock(&shmbuf->RLock);
                                 return (size_t)entsize;
                             }
 
@@ -958,19 +983,19 @@ size_t shmmap_buffer_read_copy (shmmap_buffer_t *shmbuf, char *rdbuf, size_t rdb
                             shmmap_state_set(&shmbuf->ROffset, R);
 
                             /* read success if returned entsize <= rdbufsz */
-                            shmmap_state_set(&shmbuf->RLock, 0);
+                            process_shared_mutex_unlock(&shmbuf->RLock);
                             return (size_t)entsize;
                         }
 
                         printf("(shmmap.h:%d) SHOULD NEVER RUN TO THIS! fatal bug.\n", __LINE__);
-                        shmmap_state_set(&shmbuf->RLock, 0);
+                        process_shared_mutex_unlock(&shmbuf->RLock);
                         return SHMMAP_READ_FATAL;
                     } else {
                         /* reset ROffset to 0 (set wrap = 0) */
                         shmmap_state_set(&shmbuf->ROffset, (Wo/L) * L);
 
                         /* expect to read again */
-                        shmmap_state_set(&shmbuf->RLock, 0);
+                        process_shared_mutex_unlock(&shmbuf->RLock);
                         return shmmap_buffer_read_copy(shmbuf, rdbuf, rdbufsz);
                     }
                 } else if (W - 0 > HENTSZ) { 
@@ -984,7 +1009,7 @@ size_t shmmap_buffer_read_copy (shmmap_buffer_t *shmbuf, char *rdbuf, size_t rdb
                             if (entsize > rdbufsz) {
                                 /* read buf is insufficient for entry.
                                  * read nothing if returned entsize > rdbufsz */
-                                shmmap_state_set(&shmbuf->RLock, 0);
+                                process_shared_mutex_unlock(&shmbuf->RLock);
                                 return (size_t)entsize;
                             }
 
@@ -995,13 +1020,13 @@ size_t shmmap_buffer_read_copy (shmmap_buffer_t *shmbuf, char *rdbuf, size_t rdb
                             shmmap_state_set(&shmbuf->ROffset, AENTSZ + (Wo/L)*L);
 
                             /* read success if returned entsize <= rdbufsz */
-                            shmmap_state_set(&shmbuf->RLock, 0);
+                            process_shared_mutex_unlock(&shmbuf->RLock);
                             return (size_t)entsize;
                         }
                     }
                     
                     printf("(shmmap.h:%d) SHOULD NEVER RUN TO THIS! fatal bug.\n", __LINE__);
-                    shmmap_state_set(&shmbuf->RLock, 0);
+                    process_shared_mutex_unlock(&shmbuf->RLock);
                     return SHMMAP_READ_FATAL;
                 }
             } else {  /* wrap(0): 0 .. R < W < L */
@@ -1015,7 +1040,7 @@ size_t shmmap_buffer_read_copy (shmmap_buffer_t *shmbuf, char *rdbuf, size_t rdb
                             /* read buf is insufficient for entry.
                              * read nothing if returned entsize > rdbufsz
                              */
-                            shmmap_state_set(&shmbuf->RLock, 0);
+                            process_shared_mutex_unlock(&shmbuf->RLock);
                             return (size_t)entsize;
                         }
 
@@ -1026,19 +1051,19 @@ size_t shmmap_buffer_read_copy (shmmap_buffer_t *shmbuf, char *rdbuf, size_t rdb
                         shmmap_state_set(&shmbuf->ROffset, R);
 
                         /* read success if returned entsize <= rdbufsz */
-                        shmmap_state_set(&shmbuf->RLock, 0);
+                        process_shared_mutex_unlock(&shmbuf->RLock);
                         return (size_t)entsize;
                     }
                 }
 
                 printf("(shmmap.h:%d) SHOULD NEVER RUN TO THIS! fatal bug.\n", __LINE__);
-                shmmap_state_set(&shmbuf->RLock, 0);
+                process_shared_mutex_unlock(&shmbuf->RLock);
                 return SHMMAP_READ_FATAL;
             }
         }
 
         /* no entry to read, retry again */
-        shmmap_state_set(&shmbuf->RLock, 0);
+        process_shared_mutex_unlock(&shmbuf->RLock);
         return SHMMAP_READ_AGAIN;
     }
 
@@ -1065,14 +1090,14 @@ int shmmap_buffer_read_next (shmmap_buffer_t *shmbuf, int (*nextentry_cb)(const 
 {
     int ret = SHMMAP_READ_AGAIN;
 
-    if (! shmmap_state_comp_exch(&shmbuf->RLock, 0, 1)) {
+    if (process_shared_mutex_lock(&shmbuf->RLock) == 0) {
         ssize_t Wo = shmmap_state_get(&shmbuf->WOffset);
         ssize_t Ro = shmbuf->ROffset.state;
         ssize_t wrap = SHMRINGBUF_RESTORE_WRAP(Ro, Wo, shmbuf->Length);
 
         ret = __shmmap_buffer_read_internal(shmbuf, wrap, Ro, Wo, (ssize_t)shmbuf->Length, nextentry_cb, arg);
 
-        shmmap_state_set(&shmbuf->RLock, 0);
+        process_shared_mutex_unlock(&shmbuf->RLock);
     }
 
     return ret;
@@ -1089,7 +1114,7 @@ int shmmap_buffer_read_next_batch (shmmap_buffer_t *shmbuf, int (*nextentry_cb)(
 {
     int num = 0, ret = SHMMAP_READ_AGAIN;
 
-    if (! shmmap_state_comp_exch(&shmbuf->RLock, 0, 1)) {
+    if (process_shared_mutex_lock(&shmbuf->RLock) == 0) {
         ssize_t wrap, Wo, Ro;
 
         while (batch-- > 0) {
@@ -1107,7 +1132,7 @@ int shmmap_buffer_read_next_batch (shmmap_buffer_t *shmbuf, int (*nextentry_cb)(
             }
         }
 
-        shmmap_state_set(&shmbuf->RLock, 0);
+        process_shared_mutex_unlock(&shmbuf->RLock);
     }
 
     return num;
@@ -1145,11 +1170,11 @@ NOWARNING_UNUSED(static)
 void shmmap_buffer_force_unlock (shmmap_buffer_t *shmbuf, int statelock)
 {
     if (SHMMAP_READSTATE_LOCK & statelock) {
-        shmmap_state_comp_exch(&shmbuf->RLock, 1, 0);
+        process_shared_mutex_unlock(&shmbuf->RLock);
     }
 
     if (SHMMAP_WRITESTATE_LOCK & statelock) {
-        shmmap_state_comp_exch(&shmbuf->WLock, 1, 0);
+        process_shared_mutex_unlock(&shmbuf->WLock);
     }
 }
 
