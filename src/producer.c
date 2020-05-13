@@ -59,7 +59,7 @@ int main(int argc, const char *argv[])
                 SHMMAP_PAGE_SIZE * NUMPAGES,
                 &token, NULL, NULL);
     if (ret) {
-        printf("(shmproducer.c:%d) shmmap_buffer_create error(%d)\n", __LINE__, ret);
+        printf("(producer.c:%d) shmmap_buffer_create error(%d)\n", __LINE__, ret);
         exit(EXIT_FAILURE);
     }
 
@@ -72,11 +72,11 @@ int main(int argc, const char *argv[])
         wok = shmmap_buffer_write(shmbuf, (const void *) msg, (size_t) len);
 
         if (wok == SHMMAP_WRITE_SUCCESS) {
-            printf("(shmproducer.c:%d) shmmap_buffer_write(%d/%d) success: %.*s\n", __LINE__, i, MESSAGES, len, msg);
+            printf("(producer.c:%d) shmmap_buffer_write(%d/%d) success: %.*s\n", __LINE__, i, MESSAGES, len, msg);
 
             shmmap_buffer_post(shmbuf, SHMMAP_TIMEOUT_NOWAIT);
         } else if (wok == SHMMAP_WRITE_AGAIN) {
-            printf("(shmproducer.c:%d) shmmap_buffer_write(%d/%d) failure: No space left!\n", __LINE__, i, MESSAGES);
+            printf("(producer.c:%d) shmmap_buffer_write(%d/%d) failure: No space left!\n", __LINE__, i, MESSAGES);
             usleep(1000);
         }
     }

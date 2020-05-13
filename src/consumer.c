@@ -27,12 +27,13 @@
  * consumer.c
  *   A sample app to comsume data from shared memory.
  *
- * 2020-05-10
+ * 2020-05-13
  */
 
 #define SHMMAP_TRACE_PRINT_OFF
 
 #include "shmmap.h"
+
 
 ub8token_t token = 12345678;
 
@@ -47,18 +48,30 @@ int MESSAGES = 100;
 
 int next_shmmap_entry (const shmmap_entry_t *entry, void *arg)
 {
-    int id = ((int) (uintptr_t) (void*) arg);
+    ub8 msgid = *((ub8*)arg);
 
-    printf("(shmconsumer.c:%d) shmmap_buffer_read_next(%d) success: %.*s\n",
-        __LINE__, id, (int)entry->size, entry->chunk);
+    msgid++;
+
+    printf("(consumer.c:%d) shmmap_buffer_read_next(%" PRIu64") success: %.*s\n",
+        __LINE__, msgid, (int)entry->size, entry->chunk);
+
+    *((ub8*)arg) = msgid;
+
     return SHMMAP_READ_NEXT;
 }
 
 
 int main(int argc, const char *argv[])
 {
-    int ret, i, num;
+    int ret, num;
     size_t rdlen;
+
+    ub8 msgid;
+
+    sb8 dtms;
+    struct timespec t1, t2;
+
+    pid_t pid = getpid();
 
     shmmap_buffer_t *shmbuf;
 
@@ -74,29 +87,37 @@ int main(int argc, const char *argv[])
                 &token, NULL, NULL);
 
     if (ret) {
-        printf("(shmconsumer.c:%d) shmmap_buffer_create error(%d)\n", __LINE__, ret);
+        printf("(consumer.c:%d) shmmap_buffer_create error(%d)\n", __LINE__, ret);
         exit(EXIT_FAILURE);
     }
 
     // shmmap_buffer_force_unlock(shmbuf, SHMMAP_READSTATE_LOCK|SHMMAP_WRITESTATE_LOCK);
 
-    i = 0;
+    msgid = 0;
     while (1) {
-        i++;
-
+        shmmap_gettimeofday(&t1);
+        
         /* max wait = 3000 ms */
         shmmap_buffer_wait(shmbuf, 3000*1000);
 
     #ifdef SHM_READMSG_NOCOPY
 
         // batch read without copy
-        while ((num = shmmap_buffer_read_next_batch(shmbuf, next_shmmap_entry, ((void*)(uintptr_t)(int)(i)), 20)) > 0) {
+        while ((num = shmmap_buffer_read_next_batch(shmbuf, next_shmmap_entry, (void *)&msgid, 20)) > 0) {
             // read num success
         }
 
         if (num == SHMMAP_READ_FATAL) {
-            printf("(shmconsumer.c:%d) shmmap_buffer_read_next_batch fatal.\n", __LINE__);
+            printf("(consumer.c:%d) shmmap_buffer_read_next_batch fatal.\n", __LINE__);
             break;
+        }
+
+        shmmap_gettimeofday(&t2);
+
+        dtms = shmmap_difftime_msec(&t1, &t2);
+
+        if (dtms > 1000) {
+            printf("(consumer.c:%d) process(%d) total read %" PRIu64" messages.\n", __LINE__, (int)pid, msgid);
         }
 
     #else
@@ -107,14 +128,14 @@ int main(int argc, const char *argv[])
         }
 
         if (rdlen <= sizeof(rdbuf)) {
-            printf("(shmconsumer.c:%d) shmmap_buffer_read_copy(%d) success: %.*s\n",
+            printf("(consumer.c:%d) shmmap_buffer_read_copy(%d) success: %.*s\n",
                  __LINE__, i, (int)rdlen, rdbuf);
         } else if (rdlen > sizeof(rdbuf)) {
-            printf("(shmconsumer.c:%d) shmmap_buffer_read_copy(%d) failure: insufficient rdbuf(%" PRIu64").\n",
+            printf("(consumer.c:%d) shmmap_buffer_read_copy(%d) failure: insufficient rdbuf(%" PRIu64").\n",
                  __LINE__, i, sizeof(rdbuf));
             break;
         } else {
-            printf("(shmconsumer.c:%d) shmmap_buffer_read_copy(%d) endup!\n", __LINE__, i);
+            printf("(consumer.c:%d) shmmap_buffer_read_copy(%d) endup!\n", __LINE__, i);
         }
     #endif
     }

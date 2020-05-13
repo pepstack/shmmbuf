@@ -30,7 +30,7 @@
  * @author     Liang Zhang <350137278@qq.com>
  * @version    1.0.0
  * @create     2020-05-01 12:46:50
- * @update     2020-05-13 07:42:08
+ * @update     2020-05-13 17:42:08
  *
  * NOTES:
  *  Prior to include this file, define as following to enable
@@ -71,6 +71,7 @@ extern "C"
  */
 #include "randctx.h"
 #include "md5sum.h"
+#include "unitypes.h"
 
 
 #ifndef NOWARNING_UNUSED
@@ -222,6 +223,30 @@ void shmmap_gettimeofday (struct timespec *now)
 }
 
 
+NOWARNING_UNUSED(static)
+sb8 shmmap_difftime_msec (const struct timespec *t1, const struct timespec *t2)
+{
+    sb8 sec = (sb8)(t2->tv_sec - t1->tv_sec);
+    sb8 nsec = (sb8)(t2->tv_nsec - t1->tv_nsec);
+
+    if (sec > 0) {
+        if (nsec >= 0) {
+            return ((sec * 1000UL) + nsec / 1000000UL);
+        } else { /* nsec < 0 */
+            return (sec-1) * 1000UL + (nsec + 1000000000UL) / 1000000UL;
+        }
+    } else if (sec < 0) {
+        if (nsec <= 0) {
+            return ((sec * 1000UL) + nsec / 1000000UL);
+        } else { /* nsec > 0 */
+            return (sec+1) * 1000UL + (nsec - 1000000000UL) / 1000000UL;
+        }
+    } else { /* sec = 0 */
+        return nsec / 1000000UL;
+    }
+}
+
+
 /**
  * http://www.linuxhowtos.org/manpages/3/pthread_mutexattr_setrobust.htm
  */
@@ -271,13 +296,19 @@ void process_shared_mutex_init (pthread_mutex_t *mutexp)
 
 
 NOWARNING_UNUSED(static)
-int process_shared_mutex_lock (pthread_mutex_t *mutexp)
+int process_shared_mutex_lock (pthread_mutex_t *mutexp, int istry)
 {
-    int err = pthread_mutex_lock(mutexp);
+    int err;
+
+    if (istry) {
+        err = pthread_mutex_trylock(mutexp);
+    } else {
+        err = pthread_mutex_lock(mutexp);
+    }
 
     if (err == EOWNERDEAD) {
         shmmap_mutex_consistent(mutexp);
-        err = process_shared_mutex_lock(mutexp);
+        err = process_shared_mutex_lock(mutexp, istry);
     }
 
     return err;
@@ -855,7 +886,7 @@ int shmmap_buffer_write (shmmap_buffer_t *shmbuf, const void *chunk, size_t chun
         return SHMMAP_WRITE_FATAL;
     }
 
-    if (process_shared_mutex_lock(&shmbuf->WLock) == 0) {
+    if (process_shared_mutex_lock(&shmbuf->WLock, 1) == 0) {
         /* Get original ROffset */
         Ro = shmmap_state_get(&shmbuf->ROffset);
         Wo = shmbuf->WOffset.state;
@@ -945,7 +976,7 @@ size_t shmmap_buffer_read_copy (shmmap_buffer_t *shmbuf, char *rdbuf, size_t rdb
             L = (ssize_t)shmbuf->Length,
             HENTSZ = (ssize_t)SHMMAP_ALIGN_ENTRYSIZE(0);
 
-    if (process_shared_mutex_lock(&shmbuf->RLock) == 0) {
+    if (process_shared_mutex_lock(&shmbuf->RLock, 1) == 0) {
         Wo = shmmap_state_get(&shmbuf->WOffset);
         Ro = shmbuf->ROffset.state;
 
@@ -1090,7 +1121,7 @@ int shmmap_buffer_read_next (shmmap_buffer_t *shmbuf, int (*nextentry_cb)(const 
 {
     int ret = SHMMAP_READ_AGAIN;
 
-    if (process_shared_mutex_lock(&shmbuf->RLock) == 0) {
+    if (process_shared_mutex_lock(&shmbuf->RLock, 1) == 0) {
         ssize_t Wo = shmmap_state_get(&shmbuf->WOffset);
         ssize_t Ro = shmbuf->ROffset.state;
         ssize_t wrap = SHMRINGBUF_RESTORE_WRAP(Ro, Wo, shmbuf->Length);
@@ -1114,7 +1145,7 @@ int shmmap_buffer_read_next_batch (shmmap_buffer_t *shmbuf, int (*nextentry_cb)(
 {
     int num = 0, ret = SHMMAP_READ_AGAIN;
 
-    if (process_shared_mutex_lock(&shmbuf->RLock) == 0) {
+    if (process_shared_mutex_lock(&shmbuf->RLock, 1) == 0) {
         ssize_t wrap, Wo, Ro;
 
         while (batch-- > 0) {
