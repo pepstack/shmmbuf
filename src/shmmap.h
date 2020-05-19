@@ -30,7 +30,7 @@
  * @author     Liang Zhang <350137278@qq.com>
  * @version    1.0.0
  * @create     2020-05-01 12:46:50
- * @update     2020-05-13 17:42:08
+ * @update     2020-05-19 18:45:08
  *
  * NOTES:
  *  Prior to include this file, define as following to enable
@@ -86,7 +86,7 @@ extern "C"
 /**
  * Default constants only show you the usage for shmmap api.
  *
- * Shared memory file lies in: "/dev/shm/shmmap-buffer"
+ * Shared memory file lies in: "/dev/shm/shmmap-buffer-default"
  */
 #define SHMMAP_FILENAME_DEFAULT        "shmmap-buffer-default"
 
@@ -1156,11 +1156,20 @@ int shmmap_buffer_read_next_batch (shmmap_buffer_t *shmbuf, int (*nextentry_cb)(
             ret = __shmmap_buffer_read_internal(shmbuf, wrap, Ro, Wo, (ssize_t)shmbuf->Length, nextentry_cb, arg);
             if (ret == SHMMAP_READ_NEXT) {
                 num++;
+                continue;
             }
+
+            if (ret == SHMMAP_READ_AGAIN) {
+                /* stop current batch */
+                break;
+            }
+
             if (ret == SHMMAP_READ_FATAL) {
                 num = (int) SHMMAP_READ_FATAL;
                 break;
             }
+
+            /* SHOULD NEVER RUN TO THIS ! */
         }
 
         process_shared_mutex_unlock(&shmbuf->RLock);
