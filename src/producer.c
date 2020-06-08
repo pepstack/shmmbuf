@@ -27,12 +27,12 @@
  * producer.c
  *   A sample app to produce data into shared memory.
  *
- * 2020-05-10
+ * 2020-06-08
  */
 
-#define SHMMAP_TRACE_PRINT_OFF
+#define SHMMBUF_TRACE_PRINT_OFF
 
-#include "shmmap.h"
+#include "shmmbuf.h"
 
 ub8token_t token = 12345678;
 
@@ -54,9 +54,9 @@ int main(int argc, const char *argv[])
     }
 
     ret = shmmap_buffer_create(&shmbuf,
-                SHMMAP_FILENAME_DEFAULT,
-                SHMMAP_FILEMODE_DEFAULT,
-                SHMMAP_PAGE_SIZE * NUMPAGES,
+                SHMMBUF_FILENAME_DEFAULT,
+                SHMMBUF_FILEMODE_DEFAULT,
+                SHMMBUF_PAGE_SIZE * NUMPAGES,
                 &token, NULL, NULL);
     if (ret) {
         printf("(producer.c:%d) shmmap_buffer_create error(%d)\n", __LINE__, ret);
@@ -71,11 +71,11 @@ int main(int argc, const char *argv[])
 
         wok = shmmap_buffer_write(shmbuf, (const void *) msg, (size_t) len);
 
-        if (wok == SHMMAP_WRITE_SUCCESS) {
+        if (wok == SHMMBUF_WRITE_SUCCESS) {
             printf("(producer.c:%d) shmmap_buffer_write(%d/%d) success: %.*s\n", __LINE__, i, MESSAGES, len, msg);
 
-            shmmap_buffer_post(shmbuf, SHMMAP_TIMEOUT_NOWAIT);
-        } else if (wok == SHMMAP_WRITE_AGAIN) {
+            shmmap_buffer_post(shmbuf, SHMMBUF_TIMEOUT_NOWAIT);
+        } else if (wok == SHMMBUF_WRITE_AGAIN) {
             printf("(producer.c:%d) shmmap_buffer_write(%d/%d) failure: No space left!\n", __LINE__, i, MESSAGES);
             usleep(1000);
         }

@@ -27,12 +27,12 @@
  * consumer.c
  *   A sample app to comsume data from shared memory.
  *
- * 2020-05-13
+ * 2020-06-08
  */
 
-#define SHMMAP_TRACE_PRINT_OFF
+#define SHMMBUF_TRACE_PRINT_OFF
 
-#include "shmmap.h"
+#include "shmmbuf.h"
 
 
 ub8token_t token = 12345678;
@@ -46,7 +46,7 @@ int MESSAGES = 100;
 #define SHM_READMSG_NOCOPY
 
 
-int next_shmmap_entry (const shmmap_entry_t *entry, void *arg)
+int next_shmmbuf_entry (const shmmbuf_entry_t *entry, void *arg)
 {
     ub8 msgid = *((ub8*)arg);
 
@@ -57,7 +57,7 @@ int next_shmmap_entry (const shmmap_entry_t *entry, void *arg)
 
     *((ub8*)arg) = msgid;
 
-    return SHMMAP_READ_NEXT;
+    return SHMMBUF_READ_NEXT;
 }
 
 
@@ -81,9 +81,9 @@ int main(int argc, const char *argv[])
     }
 
     ret = shmmap_buffer_create(&shmbuf,
-                SHMMAP_FILENAME_DEFAULT,
-                SHMMAP_FILEMODE_DEFAULT,
-                SHMMAP_PAGE_SIZE * NUMPAGES, /* 0: do not care */
+                SHMMBUF_FILENAME_DEFAULT,
+                SHMMBUF_FILEMODE_DEFAULT,
+                SHMMBUF_PAGE_SIZE * NUMPAGES, /* 0: do not care */
                 &token, NULL, NULL);
 
     if (ret) {
@@ -91,7 +91,7 @@ int main(int argc, const char *argv[])
         exit(EXIT_FAILURE);
     }
 
-    // shmmap_buffer_force_unlock(shmbuf, SHMMAP_READSTATE_LOCK|SHMMAP_WRITESTATE_LOCK);
+    // shmmap_buffer_force_unlock(shmbuf, SHMMBUF_READSTATE_LOCK|SHMMBUF_WRITESTATE_LOCK);
 
     msgid = 0;
     while (1) {
@@ -103,11 +103,11 @@ int main(int argc, const char *argv[])
     #ifdef SHM_READMSG_NOCOPY
 
         // batch read without copy
-        while ((num = shmmap_buffer_read_next_batch(shmbuf, next_shmmap_entry, (void *)&msgid, 20)) > 0) {
+        while ((num = shmmap_buffer_read_next_batch(shmbuf, next_shmmbuf_entry, (void *)&msgid, 20)) > 0) {
             // read num success
         }
 
-        if (num == SHMMAP_READ_FATAL) {
+        if (num == SHMMBUF_READ_FATAL) {
             printf("(consumer.c:%d) shmmap_buffer_read_next_batch fatal.\n", __LINE__);
             break;
         }
@@ -123,7 +123,7 @@ int main(int argc, const char *argv[])
     #else
         // copy to rdbuf
         rdlen = shmmap_buffer_read_copy(shmbuf, rdbuf, sizeof(rdbuf));
-        if (rdlen == SHMMAP_READ_FATAL) {
+        if (rdlen == SHMMBUF_READ_FATAL) {
             exit(EXIT_FAILURE);
         }
 
