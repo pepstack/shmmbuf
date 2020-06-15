@@ -37,20 +37,29 @@
 ub8token_t token = 12345678;
 
 int NUMPAGES = 8192;
-int MESSAGES = 100;
+int MESSAGES = 10000;
 
 char msg[1024];
 
 
 int main(int argc, const char *argv[])
 {
-    int wok, len, ret, i;
+    int wok, len, ret, i = 0;
+
+    struct timespec t1, t2;
+
+    sb8 elapsed_ms;
 
     shmmap_buffer_t *shmbuf;
 
-    if (argc == 3) {
-        NUMPAGES = atoi(argv[1]);
-        MESSAGES = atoi(argv[2]);
+    if (argc == 2) {
+        MESSAGES = atoi(argv[1]);
+    } else if (argc == 3) {
+        MESSAGES = atoi(argv[1]);
+        NUMPAGES = atoi(argv[2]);
+    } else {
+        printf("producer MESSAGES <NUMPAGES>\n");
+        exit(0);
     }
 
     ret = shmmap_buffer_create(&shmbuf,
@@ -65,14 +74,23 @@ int main(int argc, const char *argv[])
 
     srand(time(0));
 
-    for (i = 1; i <= MESSAGES; i++) {
-        len = snprintf(msg, sizeof(msg), "{%d|%d|%d|%d|%d|%d|%d|%d|%d|%d}\n",
+    shmmap_gettimeofday(&t1);
+
+    len = snprintf(msg, sizeof(msg), "{%d|%d|%d|%d|%d|%d|%d|%d|%d|%d}\n",
                 rand(), rand(), rand(), rand(), rand(), rand(), rand(), rand(), rand(), rand());
+
+    for (i = 1; i <= MESSAGES; i++) {
+    #ifdef NO_TEST_SPEED
+        len = snprintf(msg, sizeof(msg), "{%d|%d|%d|%d|%d|%d|%d|%d|%d|%d}\n",
+                    rand(), rand(), rand(), rand(), rand(), rand(), rand(), rand(), rand(), rand());
+    #endif
 
         wok = shmmap_buffer_write(shmbuf, (const void *) msg, (size_t) len);
 
         if (wok == SHMMBUF_WRITE_SUCCESS) {
-            printf("(producer.c:%d) shmmap_buffer_write(%d/%d) success: %.*s\n", __LINE__, i, MESSAGES, len, msg);
+            if (i % 100000 == 0) {
+                printf("(producer.c:%d) shmmap_buffer_write(%d/%d) success: %.*s\n", __LINE__, i, MESSAGES, len, msg);
+            }
 
             shmmap_buffer_post(shmbuf, SHMMBUF_TIMEOUT_NOWAIT);
         } else if (wok == SHMMBUF_WRITE_AGAIN) {
@@ -82,5 +100,14 @@ int main(int argc, const char *argv[])
     }
 
     shmmap_buffer_close(shmbuf);
+    
+    shmmap_gettimeofday(&t2);
+
+    elapsed_ms = shmmap_difftime_msec(&t1, &t2);
+
+    printf("(producer.c:%d) total % "PRIu64 " messages produced. elapsed %" PRId64 "ms. speed = %d/S.\n", __LINE__,
+        MESSAGES, elapsed_ms,
+        (int)(MESSAGES / (elapsed_ms / 1000)));
+
     return (0);
 }

@@ -40,7 +40,6 @@ ub8token_t token = 12345678;
 char rdbuf[1024];
 
 int NUMPAGES = 8192;
-int MESSAGES = 100;
 
 
 #define SHM_READMSG_NOCOPY
@@ -52,8 +51,10 @@ int next_shmmbuf_entry (const shmmbuf_entry_t *entry, void *arg)
 
     msgid++;
 
-    printf("(consumer.c:%d) shmmap_buffer_read_next(%" PRIu64") success: %.*s\n",
-        __LINE__, msgid, (int)entry->size, entry->chunk);
+    if (msgid % 100000UL == 0) {
+        printf("(consumer.c:%d) shmmap_buffer_read_next(%" PRIu64") success: %.*s\n",
+            __LINE__, msgid, (int)entry->size, entry->chunk);
+    }
 
     *((ub8*)arg) = msgid;
 
@@ -75,9 +76,8 @@ int main(int argc, const char *argv[])
 
     shmmap_buffer_t *shmbuf;
 
-    if (argc == 3) {
+    if (argc == 2) {
         NUMPAGES = atoi(argv[1]);
-        MESSAGES = atoi(argv[2]);
     }
 
     ret = shmmap_buffer_create(&shmbuf,
