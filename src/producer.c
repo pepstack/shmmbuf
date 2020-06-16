@@ -48,7 +48,7 @@ int main(int argc, const char *argv[])
 
     struct timespec t1, t2;
 
-    sb8 elapsed_ms;
+    double elapsed_ms;
 
     shmmap_buffer_t *shmbuf;
 
@@ -103,11 +103,13 @@ int main(int argc, const char *argv[])
     
     shmmap_gettimeofday(&t2);
 
-    elapsed_ms = shmmap_difftime_msec(&t1, &t2);
+    elapsed_ms = (double) shmmap_difftime_msec(&t1, &t2);
+    if (elapsed_ms < 1) {
+        elapsed_ms = 1.0;
+    }
 
-    printf("(producer.c:%d) total % "PRIu64 " messages produced. elapsed %" PRId64 "ms. speed = %d/S.\n", __LINE__,
-        MESSAGES, elapsed_ms,
-        (int)(MESSAGES / (elapsed_ms / 1000)));
+    printf("(producer.c:%d) total %" PRIu64 " messages produced. elapsed %.0lf ms. speed = %d/S.\n", __LINE__,
+        MESSAGES, elapsed_ms, (int)(MESSAGES / (elapsed_ms / 1000)));
 
     return (0);
 }
